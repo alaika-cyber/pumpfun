@@ -5,6 +5,7 @@ import { RugCheckService } from '../services/rugCheck';
 import { SocialSentimentAnalyzer } from '../services/socialSentiment';
 import { SQLiteMemory } from '../services/sqliteMemory';
 import { Backtester } from '../services/backtester';
+import { AIBrain } from '../services/aiBrain';
 import { loadConfig } from '../config';
 
 async function runTests() {
@@ -80,6 +81,44 @@ async function runTests() {
   const backtester = new Backtester(memory);
   const btRes = await backtester.runBacktest(1.0, 0.01, 50, -20);
   assert(btRes !== null && typeof btRes.winRate === 'number', 'Backtester runs cleanly on SQLite memory');
+
+  // 6. AIBrain Decision Engine Test
+  const aiBrain = new AIBrain(memory);
+  const aiDecision = await aiBrain.evaluateOpportunity(
+    {
+      signature: 'test_sig_123',
+      mint: 'So11111111111111111111111111111111111111112',
+      traderPublicKey: 'dev11111111111111111111111111111111111111112',
+      txType: 'create',
+      initialBuy: 0.25,
+      name: 'Quantum AI Agent',
+      symbol: 'QAIA',
+      uri: 'https://ipfs.io/ipfs/test',
+      timestamp: Date.now()
+    },
+    {
+      mint: 'So11111111111111111111111111111111111111112',
+      symbol: 'QAIA',
+      name: 'Quantum AI Agent',
+      category: 'TECH_AI',
+      researchScore: 85,
+      summary: 'High-conviction AI token',
+      hasTwitter: true,
+      hasTelegram: true,
+      hasWebsite: true,
+      hasGithubOrDocs: true,
+      narrativeTags: ['AI', 'QUANTUM'],
+      categoryMomentumScore: 90,
+      verdict: 'STRONG_BUY'
+    },
+    'SNIPER',
+    10,
+    0.15
+  );
+  assert(typeof aiDecision.shouldBuy === 'boolean', 'AIBrain returns structured typed shouldBuy decision');
+  assert(aiDecision.confidenceScore > 0, `AIBrain provides calibrated confidence score (${aiDecision.confidenceScore}/100)`);
+  assert(aiDecision.convictionTier !== undefined, `AIBrain assigns conviction tier (${aiDecision.convictionTier})`);
+  assert(typeof aiDecision.suggestedTpPercent === 'number', `AIBrain suggests take profit target (+${aiDecision.suggestedTpPercent}%)`);
 
   console.log(`\nTEST SUMMARY: ${passed} Passed, ${failed} Failed`);
   if (failed > 0) process.exit(1);

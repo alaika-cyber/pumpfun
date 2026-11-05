@@ -95,7 +95,7 @@ export class ResearchEngine {
     const tags: string[] = [category];
 
     // 3. Score Token Research Metrics
-    let score = 40; // baseline
+    let score = 55; // Solid realistic baseline for clean token launches
 
     const hasTwitter = Boolean(token.twitter && token.twitter.length > 3);
     const hasTelegram = Boolean(token.telegram && token.telegram.length > 3);
@@ -104,16 +104,23 @@ export class ResearchEngine {
     if (hasWebsite) { score += 15; tags.push('Website'); }
     if (hasTwitter) { score += 10; tags.push('Twitter/X'); }
     if (hasTelegram) { score += 10; tags.push('Telegram'); }
-    if (hasGithubOrDocs) { score += 25; tags.push('Tech Docs/GitHub'); }
+    if (hasGithubOrDocs) { score += 20; tags.push('Tech Docs/GitHub'); }
 
-    // Dev Initial Buy skin-in-the-game bonus
+    // Clean Dev Initial Buy scoring
     const devBuySol = token.initialBuy > 1e6 ? token.initialBuy / 1e9 : token.initialBuy;
-    if (devBuySol >= 0.5 && devBuySol <= 2.5) {
-      score += 15;
-      tags.push('Skin-in-the-game');
+    if (devBuySol >= 0.01 && devBuySol <= 3.0) {
+      score += 10;
+      tags.push('Fair-Launch Dev Buy');
     } else if (devBuySol > 5.0) {
       score -= 20;
       tags.push('High Dev Concentration');
+    }
+
+    // Ticker punchiness & readability
+    const sym = (token.symbol || '').trim();
+    if (sym.length >= 2 && sym.length <= 7 && /[aeiouy0-9]/i.test(sym)) {
+      score += 10;
+      tags.push('Memorable Ticker');
     }
 
     // Historical sector performance multiplier
@@ -129,8 +136,8 @@ export class ResearchEngine {
     const finalScore = Math.min(100, Math.max(0, score));
 
     let verdict: 'STRONG_BUY' | 'SPECULATIVE_BUY' | 'NEUTRAL' | 'AVOID' = 'NEUTRAL';
-    if (finalScore >= 80) verdict = 'STRONG_BUY';
-    else if (finalScore >= 65) verdict = 'SPECULATIVE_BUY';
+    if (finalScore >= 75) verdict = 'STRONG_BUY';
+    else if (finalScore >= 60) verdict = 'SPECULATIVE_BUY';
     else if (finalScore < 45) verdict = 'AVOID';
 
     return {
@@ -175,7 +182,7 @@ export class ResearchEngine {
     if (gameCount >= 2) return 'GAMING';
     if (memeCount >= 1) return 'VIRAL_MEME';
 
-    return 'TECH_AI'; // Default meta
+    return 'VIRAL_MEME'; // Pump.fun natural dominant meta
   }
 
   public recordSectorOutcome(category: TokenCategory, isWin: boolean, pnlSol: number): void {

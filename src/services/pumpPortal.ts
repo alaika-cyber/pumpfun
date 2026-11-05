@@ -229,7 +229,7 @@ export class PumpPortalService {
 
       const connection = this.solanaService.getConnection();
       const signature = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
+        skipPreflight: true,
         preflightCommitment: 'confirmed',
         maxRetries: 3
       });

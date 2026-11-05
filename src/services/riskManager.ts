@@ -126,8 +126,8 @@ export class RiskManager {
       };
     }
 
-    // 7. Stagnation / Inactivity Timeout (If holding for >75s with negative or flat PnL, free capital)
-    if (holdTimeSeconds >= 75 && position.pnlPercent <= 0) {
+    // 7. Stagnation Timeout (If holding for >180s with declining PnL, free capital)
+    if (holdTimeSeconds >= 180 && position.pnlPercent <= -5) {
       return {
         action: 'SELL',
         mint: position.mint,

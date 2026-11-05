@@ -4,7 +4,7 @@ import { SQLiteMemory, DevReputation, DBTrade } from './sqliteMemory';
 import { TokenCreationEvent } from '../types';
 import { ResearchReport } from './researchEngine';
 
-export type AIProvider = 'copilot' | 'anthropic' | 'gemini' | 'ollama' | 'openai' | 'openrouter' | 'builtin';
+export type AIProvider = 'laya' | 'jev' | 'builtin';
 
 export interface AIBrainDecision {
   shouldBuy: boolean;
@@ -23,33 +23,39 @@ export class AIBrain {
   private provider: AIProvider;
   private modelName: string;
   private memory: SQLiteMemory;
-  private enableConsensus: boolean = false;
+  private enableConsensus: boolean = true;
 
   constructor(memory: SQLiteMemory) {
     this.memory = memory;
-    this.provider = (process.env.AI_PROVIDER || 'builtin').toLowerCase() as AIProvider;
-    this.modelName = this.getDefaultModelForProvider(this.provider);
-    this.enableConsensus = process.env.AI_CONSENSUS === 'true';
+    const rawProvider = (process.env.AI_PROVIDER || 'laya').toLowerCase();
+    if (rawProvider === 'builtin') {
+      this.provider = 'builtin';
+    } else if (rawProvider === 'jev') {
+      this.provider = 'jev';
+    } else {
+      this.provider = 'laya';
+    }
 
-    console.log(chalk.magenta.bold(`[AI Brain] 🧠 QUANTUM REASONING MATRIX ONLINE | Provider: ${this.provider.toUpperCase()} (Model: ${this.modelName})`));
+    this.modelName = this.getDefaultModelForProvider(this.provider);
+    this.enableConsensus = process.env.AI_CONSENSUS !== 'false';
+
+    console.log(
+      chalk.magenta.bold(
+        `[AI Brain] 🧠 LAYA SYSTEM 1 DECISION ENGINE ONLINE | Main Model: ${this.modelName} | Provider: ${this.provider.toUpperCase()} (Jev Consensus: ${this.enableConsensus ? 'ENABLED' : 'DISABLED'})`
+      )
+    );
   }
 
   private getDefaultModelForProvider(provider: AIProvider): string {
     if (process.env.AI_MODEL) return process.env.AI_MODEL;
     switch (provider) {
-      case 'copilot':
-        return 'gpt-4o';
-      case 'anthropic':
-        return 'claude-3-5-haiku-20241022';
-      case 'gemini':
-        return 'gemini-1.5-flash';
-      case 'ollama':
-        return 'deepseek-r1';
-      case 'openrouter':
-        return 'meta-llama/llama-3.3-70b-instruct';
-      case 'openai':
+      case 'laya':
+        return 'convaiinnovations/laya';
+      case 'jev':
+        return 'jev-latest';
+      case 'builtin':
       default:
-        return 'gpt-4o-mini';
+        return 'neural-matrix';
     }
   }
 
@@ -84,344 +90,478 @@ export class AIBrain {
     const recentWins = allTrades.filter(t => t.pnlSol > 0).slice(0, 3);
     const recentLosses = allTrades.filter(t => t.pnlSol < 0).slice(0, 2);
 
-    // 3. Route to selected AI Provider
-    try {
-      let decision: AIBrainDecision | null = null;
-      switch (this.provider) {
-        case 'copilot':
-          decision = await this.queryCopilot(token, research, devRep, patternTags, strategy, bondingCurveProgress, recentWins, recentLosses);
-          break;
-        case 'anthropic':
-          decision = await this.queryAnthropic(token, research, devRep, patternTags, strategy, bondingCurveProgress, recentWins, recentLosses);
-          break;
-        case 'gemini':
-          decision = await this.queryGemini(token, research, devRep, patternTags, strategy, bondingCurveProgress, recentWins, recentLosses);
-          break;
-        case 'ollama':
-          decision = await this.queryOllama(token, research, devRep, patternTags, strategy, bondingCurveProgress, recentWins, recentLosses);
-          break;
-        case 'openai':
-          decision = await this.queryOpenAI(token, research, devRep, patternTags, strategy, bondingCurveProgress, recentWins, recentLosses);
-          break;
-        case 'openrouter':
-          decision = await this.queryOpenRouter(token, research, devRep, patternTags, strategy, bondingCurveProgress, recentWins, recentLosses);
-          break;
-      }
+    // 3. Dual-Model Consensus Mode (Laya + Jev) for Higher Win Rate
+    if (this.enableConsensus && this.provider !== 'builtin') {
+      try {
+        const [layaRes, jevRes] = await Promise.allSettled([
+          this.queryLaya(token, research, devRep, patternTags, strategy, bondingCurveProgress, topHoldersConcentration, recentWins, recentLosses),
+          this.queryJev(token, research, devRep, patternTags, strategy, bondingCurveProgress, topHoldersConcentration, recentWins, recentLosses)
+        ]);
 
-      if (decision) {
-        // Tag conviction tier
-        if (decision.confidenceScore >= 90) {
-          decision.convictionTier = 'SUPER_SNIPE';
-        } else if (decision.confidenceScore >= 80) {
-          decision.convictionTier = 'HIGH_CONVICTION';
-        } else if (decision.confidenceScore >= 65) {
-          decision.convictionTier = 'STANDARD';
-        } else {
-          decision.convictionTier = 'SPECULATIVE';
+        const layaDecision = layaRes.status === 'fulfilled' ? layaRes.value : null;
+        const jevDecision = jevRes.status === 'fulfilled' ? jevRes.value : null;
+
+        if (layaDecision && jevDecision) {
+          return this.fuseConsensusDecisions(layaDecision, jevDecision, research);
+        } else if (layaDecision) {
+          return layaDecision;
+        } else if (jevDecision) {
+          return jevDecision;
         }
-        return decision;
+      } catch (err: any) {
+        console.warn(chalk.yellow(`[AI Brain] Consensus query error: ${err.message}. Falling back to single model.`));
       }
-    } catch (err: any) {
-      console.error(chalk.yellow(`[AI Brain] ${this.provider.toUpperCase()} query failed (${err.message}). Falling back to Neural Heuristic engine.`));
     }
 
-    // 4. Built-in Deep Neural Heuristic Pattern Brain (Fallback or Default)
-    return this.evaluateBuiltinBrain(token, research, devRep, winningPatterns, strategy, bondingCurveProgress, topHoldersConcentration);
+    // 4. Primary Single Model Routing
+    if (this.provider === 'laya') {
+      try {
+        const decision = await this.queryLaya(
+          token,
+          research,
+          devRep,
+          patternTags,
+          strategy,
+          bondingCurveProgress,
+          topHoldersConcentration,
+          recentWins,
+          recentLosses
+        );
+        if (decision) return decision;
+      } catch (err: any) {
+        console.error(
+          chalk.yellow(
+            `[AI Brain] Laya query failed (${err.message}). Attempting Jev compatibility fallback.`
+          )
+        );
+        try {
+          const jevDecision = await this.queryJev(
+            token,
+            research,
+            devRep,
+            patternTags,
+            strategy,
+            bondingCurveProgress,
+            topHoldersConcentration,
+            recentWins,
+            recentLosses
+          );
+          if (jevDecision) return jevDecision;
+        } catch {}
+      }
+    } else if (this.provider === 'jev') {
+      try {
+        const decision = await this.queryJev(
+          token,
+          research,
+          devRep,
+          patternTags,
+          strategy,
+          bondingCurveProgress,
+          topHoldersConcentration,
+          recentWins,
+          recentLosses
+        );
+        if (decision) return decision;
+      } catch (err: any) {
+        console.error(
+          chalk.yellow(
+            `[AI Brain] Jev query failed (${err.message}). Attempting Laya fallback.`
+          )
+        );
+        try {
+          const layaDecision = await this.queryLaya(
+            token,
+            research,
+            devRep,
+            patternTags,
+            strategy,
+            bondingCurveProgress,
+            topHoldersConcentration,
+            recentWins,
+            recentLosses
+          );
+          if (layaDecision) return layaDecision;
+        } catch {}
+      }
+    }
+
+    // 5. Built-in Deep Neural Heuristic Pattern Brain (Zero-Downtime Fallback)
+    return this.evaluateBuiltinBrain(
+      token,
+      research,
+      devRep,
+      winningPatterns,
+      strategy,
+      bondingCurveProgress,
+      topHoldersConcentration
+    );
   }
 
-  private async queryCopilot(
+  /**
+   * Evaluates token opportunities using Laya (convaiinnovations/laya).
+   * Supports local machine execution via laya-serve (ModernBERT-large, ~33ms inference)
+   * or compatible HTTP API endpoints (/predict or /v1/systemone).
+   */
+  private async queryLaya(
     token: TokenCreationEvent,
     research: ResearchReport,
     devRep: DevReputation,
     patternTags: string,
     strategy: string,
     progress: number,
+    topHoldersConcentration: number,
     wins: DBTrade[],
     losses: DBTrade[]
   ): Promise<AIBrainDecision> {
-    const prompt = this.buildPrompt(token, research, devRep, patternTags, strategy, progress, wins, losses);
-    
-    let endpoint = process.env.COPILOT_URL || process.env.COPILOT_ENDPOINT || 'http://localhost:4141/v1/chat/completions';
-    if (!endpoint.includes('/chat/completions')) {
-      endpoint = endpoint.replace(/\/+$/, '') + '/v1/chat/completions';
+    let endpoint = process.env.LAYA_URL || 'http://localhost:8000/predict';
+    const isSystemOne = endpoint.includes('/v1/systemone') || endpoint.includes('/systemone');
+
+    const { statePayload, questions } = this.buildStateAndQuestions(
+      token,
+      research,
+      devRep,
+      patternTags,
+      strategy,
+      progress,
+      topHoldersConcentration,
+      wins,
+      losses
+    );
+
+    const apiKey = process.env.LAYA_API_KEY || process.env.TYPESAFE_API_KEY || 'local-token';
+
+    const requestBody = isSystemOne
+      ? {
+          model: this.modelName || 'convaiinnovations/laya',
+          state: JSON.stringify(statePayload),
+          questions
+        }
+      : {
+          model: this.modelName || 'convaiinnovations/laya',
+          state: statePayload,
+          questions
+        };
+
+    const response = await axios.post(endpoint, requestBody, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      timeout: 4000
+    });
+
+    const answers = response.data?.answers || response.data?.results || response.data || {};
+    return this.parseStructuredAnswers(answers, research, `Laya (${this.modelName || 'convaiinnovations/laya'})`);
+  }
+
+  /**
+   * Evaluates token opportunities using Jev AI (System One Decision Model).
+   * Fully wire-compatible with Laya's criteria questions and TypeSafe endpoints.
+   */
+  private async queryJev(
+    token: TokenCreationEvent,
+    research: ResearchReport,
+    devRep: DevReputation,
+    patternTags: string,
+    strategy: string,
+    progress: number,
+    topHoldersConcentration: number,
+    wins: DBTrade[],
+    losses: DBTrade[]
+  ): Promise<AIBrainDecision> {
+    let endpoint = process.env.JEV_URL || process.env.TYPESAFE_BASE_URL || 'http://localhost:8000/v1/systemone';
+    if (!endpoint.includes('/v1/systemone') && !endpoint.includes('/systemone')) {
+      endpoint = endpoint.replace(/\/+$/, '') + '/v1/systemone';
     }
 
-    const tokenKey = process.env.COPILOT_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key';
+    const { statePayload, questions } = this.buildStateAndQuestions(
+      token,
+      research,
+      devRep,
+      patternTags,
+      strategy,
+      progress,
+      topHoldersConcentration,
+      wins,
+      losses
+    );
+
+    const apiKey = process.env.TYPESAFE_API_KEY || process.env.JEV_API_KEY || 'local-token';
+
     const response = await axios.post(
       endpoint,
       {
-        model: this.modelName,
-        messages: [
-          { role: 'system', content: 'You are an elite quantitative crypto trading AI specializing in Solana memecoins and tech tokens on Pump.fun. Respond strictly in JSON.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.2
-      },
-      {
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tokenKey}` },
-        timeout: 6000
-      }
-    );
-
-    const rawContent = response.data?.choices?.[0]?.message?.content || '';
-    return this.parseJsonResponse(rawContent, research.narrativeTags, research.category, `Copilot (${this.modelName})`);
-  }
-
-  private async queryAnthropic(
-    token: TokenCreationEvent,
-    research: ResearchReport,
-    devRep: DevReputation,
-    patternTags: string,
-    strategy: string,
-    progress: number,
-    wins: DBTrade[],
-    losses: DBTrade[]
-  ): Promise<AIBrainDecision> {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-
-    const prompt = this.buildPrompt(token, research, devRep, patternTags, strategy, progress, wins, losses);
-    const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        model: this.modelName,
-        max_tokens: 600,
-        temperature: 0.2,
-        system: 'You are an elite quantitative crypto trading AI. Evaluate Pump.fun opportunities strictly in JSON.',
-        messages: [{ role: 'user', content: prompt }]
+        model: process.env.AI_MODEL || 'jev-latest',
+        state: JSON.stringify(statePayload),
+        questions
       },
       {
         headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
         },
-        timeout: 6000
+        timeout: 4000
       }
     );
 
-    const rawContent = response.data?.content?.[0]?.text || '';
-    return this.parseJsonResponse(rawContent, research.narrativeTags, research.category, `Claude (${this.modelName})`);
+    const answers = response.data?.answers || response.data?.results || response.data || {};
+    return this.parseStructuredAnswers(answers, research, `Jev AI (${process.env.AI_MODEL || 'jev-latest'})`);
   }
 
-  private async queryGemini(
+  /**
+   * Constructs the rich semantic state and typed questions equipped with explicit criteria.
+   * Laya's criteria-based framework solves label bias (#156) and achieves 76.6%+ classification accuracy.
+   */
+  private buildStateAndQuestions(
     token: TokenCreationEvent,
     research: ResearchReport,
     devRep: DevReputation,
     patternTags: string,
     strategy: string,
     progress: number,
+    topHoldersConcentration: number,
     wins: DBTrade[],
     losses: DBTrade[]
-  ): Promise<AIBrainDecision> {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
+  ) {
+    const semanticSummary =
+      `Token ${token.symbol} (${token.name}) launched on Pump.fun bonding curve (${progress.toFixed(1)}% complete). ` +
+      `Sector: [${research.category}]. Base research score: ${research.researchScore}/100. ` +
+      `Dev initial buy: ${token.initialBuy > 0 ? `${token.initialBuy} SOL` : 'Fair launch (0 SOL)'}. ` +
+      `Dev reputation: ${devRep.reputationScore}/100 with ${(devRep.rugRate * 100).toFixed(0)}% historical rug rate across ${devRep.totalTokensCreated} launches. ` +
+      `Top 10 holders concentration: ${(topHoldersConcentration * 100).toFixed(1)}%. ` +
+      `Social verification: ${research.hasTwitter ? 'Twitter active; ' : ''}${research.hasTelegram ? 'Telegram active; ' : ''}${research.hasWebsite ? 'Website live; ' : ''}${research.hasGithubOrDocs ? 'Docs verified.' : 'No socials yet.'} ` +
+      `Narrative tags: ${research.narrativeTags.join(', ') || 'Emerging Meta'}. ` +
+      `Recent winning meta: ${wins.map(w => w.symbol).join(', ') || 'None'}. Recent stopped losses: ${losses.map(l => l.symbol).join(', ') || 'None'}.`;
 
-    const prompt = this.buildPrompt(token, research, devRep, patternTags, strategy, progress, wins, losses);
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${this.modelName}:generateContent?key=${apiKey}`,
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
+    const statePayload = {
+      body: semanticSummary,
+      market: 'pump.fun',
+      token: {
+        symbol: token.symbol,
+        name: token.name,
+        category: research.category,
+        researchScore: research.researchScore,
+        devInitialBuySol: token.initialBuy,
+        bondingCurveProgressPct: Number(progress.toFixed(2)),
+        topHoldersConcentrationPct: Number((topHoldersConcentration * 100).toFixed(1)),
+        hasSocials: Boolean(research.hasTwitter || research.hasTelegram || research.hasWebsite || research.hasGithubOrDocs),
+        twitter: research.hasTwitter,
+        telegram: research.hasTelegram,
+        website: research.hasWebsite,
+        narrativeTags: research.narrativeTags
       },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 6000 }
-    );
-
-    const rawContent = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return this.parseJsonResponse(rawContent, research.narrativeTags, research.category, `Gemini (${this.modelName})`);
-  }
-
-  private async queryOllama(
-    token: TokenCreationEvent,
-    research: ResearchReport,
-    devRep: DevReputation,
-    patternTags: string,
-    strategy: string,
-    progress: number,
-    wins: DBTrade[],
-    losses: DBTrade[]
-  ): Promise<AIBrainDecision> {
-    const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
-    const prompt = this.buildPrompt(token, research, devRep, patternTags, strategy, progress, wins, losses);
-
-    const response = await axios.post(
-      `${host}/api/generate`,
-      {
-        model: this.modelName,
-        prompt: prompt,
-        stream: false,
-        format: 'json',
-        options: { temperature: 0.2 }
+      devReputation: {
+        rugRatePct: Number((devRep.rugRate * 100).toFixed(1)),
+        totalTokensCreated: devRep.totalTokensCreated,
+        reputationScore: devRep.reputationScore,
+        isBlacklisted: devRep.isBlacklisted
       },
-      { timeout: 8000 }
-    );
+      strategy,
+      recentWinningPatterns: patternTags || 'None',
+      recentWins: wins.map(w => `${w.symbol} (+${w.pnlPercent.toFixed(1)}%)`),
+      recentLosses: losses.map(l => `${l.symbol} (${l.pnlPercent.toFixed(1)}%)`)
+    };
 
-    const rawContent = response.data?.response || '';
-    return this.parseJsonResponse(rawContent, research.narrativeTags, research.category, `Ollama (${this.modelName})`);
-  }
-
-  private async queryOpenAI(
-    token: TokenCreationEvent,
-    research: ResearchReport,
-    devRep: DevReputation,
-    patternTags: string,
-    strategy: string,
-    progress: number,
-    wins: DBTrade[],
-    losses: DBTrade[]
-  ): Promise<AIBrainDecision> {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error('OPENAI_API_KEY is not set');
-
-    const prompt = this.buildPrompt(token, research, devRep, patternTags, strategy, progress, wins, losses);
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: this.modelName,
-        messages: [
-          { role: 'system', content: 'You are an elite crypto trading bot brain. Output strictly JSON.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.2,
-        response_format: { type: 'json_object' }
+    // Interoperable Questions with both criteria (Laya) and options (Jev)
+    const questions = {
+      should_buy: {
+        type: 'noul',
+        instructions: 'Should the trading bot snipe/buy this token opportunity on the pump.fun bonding curve?',
+        criteria: {
+          true: 'buy the token: clean dev, punchy ticker, verified narrative, low concentration, and high breakout probability',
+          false: 'skip the token: suspicious dev, excessive initial buy, spam ticker, or elevated rug risk'
+        },
+        labels: { true: 'BUY', false: 'SKIP' }
       },
-      {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 6000
+      conviction_tier: {
+        type: 'choice',
+        instructions: 'Determine conviction tier for position sizing and risk control.',
+        criteria: {
+          SUPER_SNIPE: 'top-tier conviction, verified socials/docs, clean dev history, strong viral meme or tech narrative',
+          HIGH_CONVICTION: 'solid momentum, safe dev buy size, active community interest, favorable volume velocity',
+          STANDARD: 'ordinary fair launch satisfying baseline anti-rug filters',
+          SPECULATIVE: 'low conviction, questionable dev history, high dump risk, avoid entry'
+        },
+        options: ['SUPER_SNIPE', 'HIGH_CONVICTION', 'STANDARD', 'SPECULATIVE']
+      },
+      risk_level: {
+        type: 'choice',
+        instructions: 'Assess the risk profile and red flags for this token.',
+        criteria: {
+          SAFE_CLEAN: 'verified socials, clean dev history, fair launch metrics, organic volume',
+          BALANCED: 'moderate risk profile with normal pump.fun market parameters',
+          HIGH_DEV_RISK: 'dev reputation warning, excessive initial buy, or high holder concentration',
+          SPAM_RUG_PATTERN: 'clear spam ticker, serial rugger pattern, or blacklisted dev'
+        },
+        options: ['SAFE_CLEAN', 'BALANCED', 'HIGH_DEV_RISK', 'SPAM_RUG_PATTERN']
+      },
+      target_take_profit: {
+        type: 'choice',
+        instructions: 'Optimal take-profit milestone based on sector velocity.',
+        criteria: {
+          TP_45: 'fast 45% scalp target for rapid meme rotations',
+          TP_75: '75% target for AI, DePIN, and tech narrative trends',
+          TP_100: '100% 2x milestone for high-conviction breakout setups',
+          TP_150: '150% 2.5x milestone for hyper-viral market runners',
+          TP_200: '200% 3x moonbag for alpha target leaders'
+        },
+        options: ['TP_45', 'TP_75', 'TP_100', 'TP_150', 'TP_200']
       }
-    );
+    };
 
-    const rawContent = response.data?.choices?.[0]?.message?.content || '';
-    return this.parseJsonResponse(rawContent, research.narrativeTags, research.category, `OpenAI (${this.modelName})`);
+    return { statePayload, questions };
   }
 
-  private async queryOpenRouter(
-    token: TokenCreationEvent,
+  /**
+   * Unified parser handling Laya and Jev typed decision answers.
+   */
+  private parseStructuredAnswers(
+    answers: any,
     research: ResearchReport,
-    devRep: DevReputation,
-    patternTags: string,
-    strategy: string,
-    progress: number,
-    wins: DBTrade[],
-    losses: DBTrade[]
-  ): Promise<AIBrainDecision> {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) throw new Error('OPENROUTER_API_KEY is not set');
-
-    const prompt = this.buildPrompt(token, research, devRep, patternTags, strategy, progress, wins, losses);
-    const response = await axios.post(
-      'https://openrouter.ai/api/v1/chat/completions',
-      {
-        model: this.modelName,
-        messages: [
-          { role: 'system', content: 'You are an elite crypto trading bot brain. Output strictly JSON.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.2
-      },
-      {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 6000
+    providerName: string
+  ): AIBrainDecision {
+    // 1. Process should_buy Noul probability / answer_confidence
+    let shouldBuyProb = 0.5;
+    const rawShouldBuy = answers.should_buy;
+    if (rawShouldBuy !== undefined && rawShouldBuy !== null) {
+      if (typeof rawShouldBuy.noul === 'number') {
+        shouldBuyProb = rawShouldBuy.noul;
+      } else if (typeof rawShouldBuy.answer_confidence === 'number') {
+        shouldBuyProb = rawShouldBuy.answer_confidence;
+      } else if (typeof rawShouldBuy.probability === 'number') {
+        shouldBuyProb = rawShouldBuy.probability;
+      } else if (typeof rawShouldBuy.value === 'number') {
+        shouldBuyProb = rawShouldBuy.value;
+      } else if (typeof rawShouldBuy.value === 'boolean') {
+        shouldBuyProb = rawShouldBuy.value ? 0.88 : 0.15;
+      } else if (typeof rawShouldBuy.choice === 'string') {
+        shouldBuyProb = rawShouldBuy.choice.toUpperCase().includes('BUY') || rawShouldBuy.choice === 'true' ? 0.88 : 0.15;
+      } else if (typeof rawShouldBuy === 'number') {
+        shouldBuyProb = rawShouldBuy;
+      } else if (typeof rawShouldBuy === 'boolean') {
+        shouldBuyProb = rawShouldBuy ? 0.88 : 0.15;
       }
-    );
-
-    const rawContent = response.data?.choices?.[0]?.message?.content || '';
-    return this.parseJsonResponse(rawContent, research.narrativeTags, research.category, `OpenRouter (${this.modelName})`);
-  }
-
-  private parseJsonResponse(raw: string, defaultTags: string[], category: string, providerName: string): AIBrainDecision {
-    try {
-      let cleaned = raw.trim();
-      // Strip markdown ```json ... ``` wrappers
-      cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        cleaned = jsonMatch[0];
-      }
-      const content = JSON.parse(cleaned);
-      const conf = Math.max(0, Math.min(100, Number(content.confidenceScore || 50)));
-
-      // Dynamic Category Target Adjuster
-      let defTp = 50;
-      if (category === 'TECH_AI') defTp = 75;
-      else if (category === 'VIRAL_MEME') defTp = 45;
-
-      const convictionTier = conf >= 85 ? 'SUPER_SNIPE' : conf >= 75 ? 'HIGH_CONVICTION' : conf >= 60 ? 'STANDARD' : 'SPECULATIVE';
-
-      return {
-        shouldBuy: Boolean(content.shouldBuy),
-        confidenceScore: conf,
-        suggestedTpPercent: Number(content.suggestedTpPercent || defTp),
-        suggestedSlPercent: Number(content.suggestedSlPercent || -20),
-        reasoning: content.reasoning || 'AI quantitative analysis complete',
-        riskFactors: Array.isArray(content.riskFactors) ? content.riskFactors : [],
-        tags: Array.isArray(content.tags) ? content.tags : defaultTags,
-        category: category,
-        providerUsed: providerName,
-        convictionTier
-      };
-    } catch {
-      return {
-        shouldBuy: false,
-        confidenceScore: 40,
-        suggestedTpPercent: 50,
-        suggestedSlPercent: -20,
-        reasoning: 'Heuristic fallback applied (JSON format check)',
-        riskFactors: ['JSON Parse Fallback'],
-        tags: defaultTags,
-        category: category,
-        providerUsed: providerName,
-        convictionTier: 'SPECULATIVE'
-      };
     }
+
+    const confidenceScore = Math.max(0, Math.min(100, Math.round(shouldBuyProb * 100)));
+
+    // 2. Process Conviction Tier Choice
+    let convictionTier: 'SUPER_SNIPE' | 'HIGH_CONVICTION' | 'STANDARD' | 'SPECULATIVE' = 'STANDARD';
+    const rawConviction = answers.conviction_tier?.choice || answers.conviction_tier?.value || answers.conviction_tier;
+    if (
+      typeof rawConviction === 'string' &&
+      ['SUPER_SNIPE', 'HIGH_CONVICTION', 'STANDARD', 'SPECULATIVE'].includes(rawConviction)
+    ) {
+      convictionTier = rawConviction as any;
+    } else {
+      if (confidenceScore >= 90) convictionTier = 'SUPER_SNIPE';
+      else if (confidenceScore >= 80) convictionTier = 'HIGH_CONVICTION';
+      else if (confidenceScore >= 65) convictionTier = 'STANDARD';
+      else convictionTier = 'SPECULATIVE';
+    }
+
+    // 3. Process Risk Level Choice
+    const riskLevel = answers.risk_level?.choice || answers.risk_level?.value || 'BALANCED';
+
+    // 4. Process Dynamic Take-Profit Target
+    const defaultTpKey = research.category === 'TECH_AI' ? 'TP_75' : 'TP_50';
+    const tpChoice = answers.target_take_profit?.choice || answers.target_take_profit?.value || defaultTpKey;
+    const tpMap: Record<string, number> = {
+      TP_45: 45,
+      TP_50: 50,
+      TP_75: 75,
+      TP_100: 100,
+      TP_150: 150,
+      TP_200: 200
+    };
+    const suggestedTpPercent = tpMap[tpChoice] || (research.category === 'TECH_AI' ? 75 : 50);
+
+    const riskFactors: string[] = [];
+    if (riskLevel === 'HIGH_DEV_RISK') riskFactors.push('Elevated dev risk flagged by System 1 model');
+    if (riskLevel === 'SPAM_RUG_PATTERN') riskFactors.push('Spam/rug pattern detected by System 1 model');
+
+    const shouldBuy = shouldBuyProb >= 0.55 && riskLevel !== 'SPAM_RUG_PATTERN' && convictionTier !== 'SPECULATIVE';
+
+    return {
+      shouldBuy,
+      confidenceScore,
+      suggestedTpPercent,
+      suggestedSlPercent: -20,
+      reasoning: `${providerName}: ${shouldBuy ? 'BUY' : 'SKIP'} [${convictionTier}] Prob: ${(shouldBuyProb * 100).toFixed(1)}%, Risk: ${riskLevel}, TP Target: +${suggestedTpPercent}%`,
+      riskFactors,
+      tags: research.narrativeTags,
+      category: research.category,
+      providerUsed: providerName,
+      convictionTier
+    };
   }
 
-  private buildPrompt(
-    token: TokenCreationEvent,
-    research: ResearchReport,
-    devRep: DevReputation,
-    patternTags: string,
-    strategy: string,
-    progress: number,
-    wins: DBTrade[],
-    losses: DBTrade[]
-  ): string {
-    const winContext = wins.map(w => `• Win: ${w.symbol} (+${w.pnlPercent.toFixed(1)}% PnL, Strategy: ${w.strategy})`).join('\n') || 'None recorded yet';
-    const lossContext = losses.map(l => `• Loss: ${l.symbol} (${l.pnlPercent.toFixed(1)}% PnL, Reason: ${l.reason})`).join('\n') || 'None recorded yet';
+  /**
+   * Synergistic Consensus Fuser: Combines Laya semantic reasoning and Jev probability scoring.
+   * Double-confirmation prevents false breakout rugs and elevates winning trade sizing.
+   */
+  private fuseConsensusDecisions(
+    laya: AIBrainDecision,
+    jev: AIBrainDecision,
+    research: ResearchReport
+  ): AIBrainDecision {
+    const bothBuy = laya.shouldBuy && jev.shouldBuy;
+    const eitherRugRisk =
+      laya.riskFactors.length > 0 ||
+      jev.riskFactors.length > 0 ||
+      laya.convictionTier === 'SPECULATIVE' ||
+      jev.convictionTier === 'SPECULATIVE';
 
-    return `
-Analyze this Solana Pump.fun token launch with deep quantitative Chain-of-Thought reasoning:
+    // Weighted average: Laya 55% (ModernBERT semantic strength) + Jev 45% (System One scoring)
+    let fusedConfidence = Math.round(laya.confidenceScore * 0.55 + jev.confidenceScore * 0.45);
 
-[TOKEN SPECIFICATIONS]
-• Symbol: ${token.symbol} (${token.name})
-• Category: [${research.category}] (Research Score: ${research.researchScore}/100)
-• Social Footprint: Website: ${research.hasWebsite}, Twitter: ${research.hasTwitter}, Telegram: ${research.hasTelegram}, GitHub/Docs: ${research.hasGithubOrDocs}
-• Dev Initial Buy: ${token.initialBuy} SOL
-• Dev Historical Win Rate: ${devRep.reputationScore}/100 (Created: ${devRep.totalTokensCreated}, Rugged: ${devRep.ruggedTokens})
-• Active Trading Strategy: ${strategy}
-• Bonding Curve Progress: ${progress}%
-• Narrative Tags: ${research.narrativeTags.join(', ')}
-• Market Profitable Meta: ${patternTags || 'None'}
+    let convictionTier: 'SUPER_SNIPE' | 'HIGH_CONVICTION' | 'STANDARD' | 'SPECULATIVE';
+    let shouldBuy = false;
+    let reasoning = '';
 
-[HISTORICAL MEMORY FEW-SHOT CONTEXT]
-Recent Successful Trades in Session:
-${winContext}
+    if (bothBuy && !eitherRugRisk) {
+      // WIN-RATE BOOST: Dual confirmation grants +8% confidence synergy bonus
+      fusedConfidence = Math.min(99, fusedConfidence + 8);
+      shouldBuy = true;
 
-Recent Stopped-Out Trades to Avoid:
-${lossContext}
+      if (laya.convictionTier === 'SUPER_SNIPE' || jev.convictionTier === 'SUPER_SNIPE') {
+        convictionTier = 'SUPER_SNIPE';
+      } else if (fusedConfidence >= 80) {
+        convictionTier = 'HIGH_CONVICTION';
+      } else {
+        convictionTier = 'STANDARD';
+      }
 
-[INSTRUCTIONS]
-Evaluate whether this token represents an asymmetric risk/reward entry.
-Respond ONLY with a valid JSON object matching this schema:
-{
-  "shouldBuy": boolean,
-  "confidenceScore": number (0 to 100),
-  "suggestedTpPercent": number (e.g. 50 to 150),
-  "suggestedSlPercent": number (negative, e.g. -20),
-  "reasoning": string (concise 1-sentence analytical thesis),
-  "riskFactors": string[]
-}
-`;
+      reasoning = `Laya + Jev Dual Consensus [WIN-RATE BOOST]: BUY [${convictionTier}] (${fusedConfidence}% conf) | Laya: ${laya.confidenceScore}%, Jev: ${jev.confidenceScore}% | TP Target: +${Math.max(laya.suggestedTpPercent, jev.suggestedTpPercent)}%`;
+    } else if (eitherRugRisk) {
+      // CAPITAL PRESERVATION: Rug risk flagged by either model triggers defensive veto
+      shouldBuy = false;
+      convictionTier = 'SPECULATIVE';
+      fusedConfidence = Math.min(45, fusedConfidence);
+      const combinedRisks = Array.from(new Set([...laya.riskFactors, ...jev.riskFactors]));
+      reasoning = `Consensus Rug Shield: SKIPPED [${combinedRisks.join('; ') || 'Elevated Risk'}] | Laya: ${laya.shouldBuy ? 'BUY' : 'SKIP'}, Jev: ${jev.shouldBuy ? 'BUY' : 'SKIP'}`;
+    } else {
+      // Divergence: One model bought, one skipped
+      shouldBuy = fusedConfidence >= 75;
+      convictionTier = shouldBuy ? 'STANDARD' : 'SPECULATIVE';
+      reasoning = `Consensus Divergence: ${shouldBuy ? 'Cautious BUY' : 'SKIP'} (Laya: ${laya.shouldBuy ? 'BUY' : 'SKIP'} ${laya.confidenceScore}%, Jev: ${jev.shouldBuy ? 'BUY' : 'SKIP'} ${jev.confidenceScore}%)`;
+    }
+
+    const suggestedTpPercent = Math.max(laya.suggestedTpPercent, jev.suggestedTpPercent);
+
+    return {
+      shouldBuy,
+      confidenceScore: fusedConfidence,
+      suggestedTpPercent,
+      suggestedSlPercent: -20,
+      reasoning,
+      riskFactors: Array.from(new Set([...laya.riskFactors, ...jev.riskFactors])),
+      tags: research.narrativeTags,
+      category: research.category,
+      providerUsed: 'Laya + Jev Dual Consensus Matrix',
+      convictionTier
+    };
   }
 
   private evaluateBuiltinBrain(
@@ -433,33 +573,42 @@ Respond ONLY with a valid JSON object matching this schema:
     progress: number,
     topHoldersConcentration: number
   ): AIBrainDecision {
-    let score = research.researchScore;
+    let score = Math.max(50, research.researchScore);
     const riskFactors: string[] = [];
 
+    // Dev reputation analysis
     if (devRep.totalTokensCreated > 0) {
       if (devRep.reputationScore >= 70) {
         score += 15;
       } else if (devRep.reputationScore <= 35) {
-        score -= 30;
+        score -= 25;
         riskFactors.push(`Dev low reputation (${devRep.reputationScore}/100)`);
       }
     }
 
-    if (topHoldersConcentration > 0.25) {
+    // Holder concentration check
+    if (topHoldersConcentration > 0.35) {
       score -= 20;
       riskFactors.push(`High holder concentration (${(topHoldersConcentration * 100).toFixed(0)}%)`);
     }
 
+    // Pattern alignment bonus
     for (const pat of winningPatterns) {
       if (research.narrativeTags.includes(pat.tag)) {
         score += 10;
       }
     }
 
-    const finalScore = Math.min(100, Math.max(0, score));
-    const shouldBuy = finalScore >= 60 && riskFactors.length === 0;
+    // Ticker punchiness bonus
+    const symbol = (token.symbol || '').trim();
+    if (symbol.length >= 3 && symbol.length <= 6 && /[aeiouy0-9]/i.test(symbol)) {
+      score += 10;
+    }
 
-    let reasoning = `Research Brain scored ${finalScore}/100 for [${research.category}] (${research.narrativeTags.join(', ')}).`;
+    const finalScore = Math.min(100, Math.max(0, score));
+    const shouldBuy = finalScore >= 55 && riskFactors.length === 0;
+
+    let reasoning = `Algorithmic Brain scored ${finalScore}/100 for [${research.category}] ${symbol} (${research.narrativeTags.join(', ')}).`;
     if (!shouldBuy && riskFactors.length > 0) {
       reasoning = `Skipped: ${riskFactors.join('; ')} (Confidence: ${finalScore}/100)`;
     }
@@ -473,8 +622,8 @@ Respond ONLY with a valid JSON object matching this schema:
       riskFactors,
       tags: research.narrativeTags,
       category: research.category,
-      providerUsed: 'Built-in Deep Neural Brain',
-      convictionTier: finalScore >= 85 ? 'SUPER_SNIPE' : finalScore >= 70 ? 'STANDARD' : 'SPECULATIVE'
+      providerUsed: 'Built-in Quantitative Neural Matrix',
+      convictionTier: finalScore >= 85 ? 'SUPER_SNIPE' : finalScore >= 70 ? 'HIGH_CONVICTION' : 'STANDARD'
     };
   }
 }

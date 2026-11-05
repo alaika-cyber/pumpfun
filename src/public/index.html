@@ -202,7 +202,7 @@
           <span id="statRegime" class="text-lg sm:text-xl font-black mono text-cyan-400 truncate">SNIPER REGIME</span>
         </div>
         <div class="mt-1.5 text-[10px] sm:text-[11px] text-gray-400 flex items-center justify-between pt-1.5 border-t border-gray-800/60">
-          <span>Model: <span id="statAiModel" class="text-purple-400 font-bold truncate">COPILOT</span></span>
+          <span>Model: <span id="statAiModel" class="text-purple-400 font-bold truncate">LAYA + JEV</span></span>
           <span class="text-emerald-400 font-bold flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> AUTO</span>
         </div>
       </div>
@@ -833,7 +833,7 @@
 
       document.getElementById('statWinRate').textContent = data.stats.winRate.toFixed(1) + '%';
       document.getElementById('statTradesCount').textContent = `${data.stats.winningTrades}W / ${data.stats.losingTrades}L`;
-      document.getElementById('statAiModel').textContent = (data.config.aiProvider || 'COPILOT').toUpperCase();
+      document.getElementById('statAiModel').textContent = (data.config.aiProvider || 'LAYA').toUpperCase();
 
       if (data.marketRegime) {
         document.getElementById('statRegime').textContent = `${data.marketRegime.currentStrategy} (${data.marketRegime.marketSpeedTokensPerMin} t/m)`;

@@ -89,10 +89,13 @@ export interface AgentConfig {
   profitVaultThresholdSol: number;
   vaultDestinationWallet?: string;
 
-  // AI Brain & Memory
+  // AI Brain & Memory (Laya & Jev System 1 Decision Architecture)
   aiProvider: string;
   aiModel: string;
   minAiConfidence: number;
+  layaUrl?: string;
+  jevUrl?: string;
+  enableAiConsensus?: boolean;
 
   // Jito MEV Bundle
   enableJito: boolean;

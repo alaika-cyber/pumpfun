@@ -27,10 +27,13 @@ export function loadConfig(): AgentConfig {
     profitVaultThresholdSol: parseFloat(process.env.PROFIT_VAULT_THRESHOLD_SOL || '0.5'), // e.g. 0.5 SOL (~$100 vault milestone)
     vaultDestinationWallet: process.env.VAULT_DESTINATION_WALLET || '',
 
-    // AI Brain & Memory
-    aiProvider: process.env.AI_PROVIDER || 'copilot',
-    aiModel: process.env.AI_MODEL || 'gpt-4o',
+    // AI Brain & Memory (Laya Main Model + Jev System 1 Decision Architecture)
+    aiProvider: process.env.AI_PROVIDER || 'laya',
+    aiModel: process.env.AI_MODEL || 'convaiinnovations/laya',
     minAiConfidence: parseInt(process.env.MIN_AI_CONFIDENCE || '60', 10),
+    layaUrl: process.env.LAYA_URL || 'http://localhost:8000/predict',
+    jevUrl: process.env.JEV_URL || 'http://localhost:8000/v1/systemone',
+    enableAiConsensus: process.env.AI_CONSENSUS !== 'false',
 
     // Jito MEV Bundle
     enableJito: process.env.ENABLE_JITO === 'true',

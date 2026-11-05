@@ -78,103 +78,55 @@ This guide details **every single variable** in `.env`, what it controls, and **
 
 ## 3. AI Model Credentials
 
-You only need credentials for the **one** provider you choose in `AI_PROVIDER`.
+### Option A: Laya Local Machine Instance (`laya`) — *(Recommended Main Model)*
+- **Model**: `convaiinnovations/laya` (ModernBERT-large, 421M params, ~33ms inference)
+- **`AI_PROVIDER`**: `laya`
+- **`LAYA_URL`**: `http://localhost:8000/predict`
+- **`AI_MODEL`**: `convaiinnovations/laya`
+- **`AI_CONSENSUS`**: `true` (enables Laya + Jev dual validation for higher win rate)
 
-### Option A: Local GitHub Copilot Proxy (`copilot`) — *(Default)*
-- **Cost**: Uses your existing GitHub Copilot subscription.
-- **`AI_PROVIDER`**: `copilot`
-- **`COPILOT_URL`**: `http://localhost:4141`
-- **`AI_MODEL`**: `gpt-4o`
-
-#### 📍 How to set up:
-1. Start your local Copilot proxy on port `4141`.
-2. Verify it is running in your terminal:
+#### 📍 How to run Laya locally:
+1. Install and start Laya inference server:
    ```bash
-   curl http://localhost:4141/v1/models
+   pip install "laya[serve]"
+   LAYA_DEVICE=cuda LAYA_PRELOAD=1 laya-serve   # or LAYA_DEVICE=cpu
+   ```
+2. Verify local connectivity:
+   ```bash
+   curl http://localhost:8000/predict
    ```
 3. Set in `.env`:
    ```env
-   AI_PROVIDER=copilot
-   COPILOT_URL=http://localhost:4141
-   AI_MODEL=gpt-4o
+   AI_PROVIDER=laya
+   AI_MODEL=convaiinnovations/laya
+   LAYA_URL=http://localhost:8000/predict
+   JEV_URL=http://localhost:8000/v1/systemone
+   AI_CONSENSUS=true
    ```
 
 ---
 
-### Option B: Google Gemini API (`gemini`) — *(Fast & Free Tier Available)*
-- **`AI_PROVIDER`**: `gemini`
-- **`AI_MODEL`**: `gemini-1.5-flash`
+### Option B: Jev Wire Instance (`jev`)
+- **`AI_PROVIDER`**: `jev`
+- **`JEV_URL`**: `http://localhost:8000/v1/systemone`
+- **`AI_MODEL`**: `jev-latest`
 
-#### 📍 Where to get your Gemini API Key:
-1. Go to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
-2. Sign in with your Google account.
-3. Click **"Create API Key"** $\rightarrow$ Select or create a project.
-4. Copy the generated API key (starts with `AIzaSy...`).
-5. Set in `.env`:
-   ```env
-   AI_PROVIDER=gemini
-   GEMINI_API_KEY=AIzaSyYourGeneratedGeminiKeyHere
-   AI_MODEL=gemini-1.5-flash
-   ```
+```env
+AI_PROVIDER=jev
+JEV_URL=http://localhost:8000/v1/systemone
+AI_MODEL=jev-latest
+```
 
 ---
 
-### Option C: Anthropic Claude API (`anthropic`) — *(Elite Reasoning)*
-- **`AI_PROVIDER`**: `anthropic`
-- **`AI_MODEL`**: `claude-3-5-haiku-20241022`
+### Option C: Built-in Quantitative Neural Engine (`builtin`) — *(Zero Config Fallback)*
+- **Cost**: $0.00
+- **`AI_PROVIDER`**: `builtin`
+- Runs 100% offline using deterministic heuristics without any external server or API keys.
 
-#### 📍 Where to get your Anthropic API Key:
-1. Go to [https://console.anthropic.com](https://console.anthropic.com).
-2. Sign up and navigate to **"API Keys"** in the left menu.
-3. Click **"Create Key"** $\rightarrow$ Name it `pumpfun-agent`.
-4. Copy the key (starts with `sk-ant-api03-...`).
-5. Set in `.env`:
-   ```env
-   AI_PROVIDER=anthropic
-   ANTHROPIC_API_KEY=sk-ant-api03-YourAnthropicKeyHere
-   AI_MODEL=claude-3-5-haiku-20241022
-   ```
-
----
-
-### Option D: Ollama Offline Local LLM (`ollama`) — *(100% Free & Private)*
-- **Cost**: $0.00 (Runs locally on your CPU/GPU).
-- **`AI_PROVIDER`**: `ollama`
-- **`OLLAMA_HOST`**: `http://localhost:11434`
-- **`AI_MODEL`**: `deepseek-r1` or `llama3.3`
-
-#### 📍 How to install & run Ollama:
-1. Install Ollama in Linux:
-   ```bash
-   curl -fsSL https://ollama.com/install.sh | sh
-   ```
-2. Pull DeepSeek or Llama:
-   ```bash
-   ollama pull deepseek-r1
-   ```
-3. Set in `.env`:
-   ```env
-   AI_PROVIDER=ollama
-   OLLAMA_HOST=http://localhost:11434
-   AI_MODEL=deepseek-r1
-   ```
-
----
-
-### Option E: OpenAI API (`openai`)
-- **`AI_PROVIDER`**: `openai`
-- **`AI_MODEL`**: `gpt-4o-mini`
-
-#### 📍 Where to get your OpenAI API Key:
-1. Go to [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys).
-2. Sign in $\rightarrow$ Click **"Create new secret key"**.
-3. Copy the key (starts with `sk-proj-...`).
-4. Set in `.env`:
-   ```env
-   AI_PROVIDER=openai
-   OPENAI_API_KEY=sk-proj-YourOpenAIKeyHere
-   AI_MODEL=gpt-4o-mini
-   ```
+```env
+AI_PROVIDER=builtin
+```
 
 ---
 
@@ -262,18 +214,13 @@ WEB_PORT=3000
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 SOLANA_PRIVATE_KEY=
 
-# 3. AI Model Brain Matrix
-AI_PROVIDER=copilot             # copilot | gemini | anthropic | ollama | openai | builtin
-COPILOT_URL=http://localhost:4141
-AI_MODEL=gpt-4o
+# 3. AI Model Brain (Laya Main Model + Jev Consensus)
+AI_PROVIDER=laya                # 'laya' (convaiinnovations/laya), 'jev', or 'builtin'
+AI_MODEL=convaiinnovations/laya # 'convaiinnovations/laya' (HuggingFace) or 'laya-latest'
+LAYA_URL=http://localhost:8000/predict # Local machine Laya instance
+JEV_URL=http://localhost:8000/v1/systemone # Local machine Jev instance
+AI_CONSENSUS=true               # Run dual-model consensus for maximum win rate
 MIN_AI_CONFIDENCE=60
-
-# Optional API Keys (Only fill the one for your selected AI_PROVIDER)
-GEMINI_API_KEY=
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-OPENROUTER_API_KEY=
-OLLAMA_HOST=http://localhost:11434
 
 # 4. Cyclical Profit Auto-Vault ($1 -> $101 Milestone Lock)
 ENABLE_PROFIT_VAULT=true

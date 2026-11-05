@@ -8,7 +8,9 @@
     "start": "ts-node src/index.ts",
     "paper": "ts-node src/index.ts --mode=paper",
     "live": "ts-node src/index.ts --mode=live",
-    "test-wallet": "ts-node src/scripts/testWallet.ts"
+    "test-wallet": "ts-node src/scripts/testWallet.ts",
+    "withdraw": "ts-node src/scripts/withdraw.ts",
+    "sweep": "ts-node src/scripts/withdraw.ts"
   },
   "keywords": [
     "solana",

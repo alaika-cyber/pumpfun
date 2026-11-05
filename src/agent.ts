@@ -341,7 +341,78 @@ export class PumpFunAgent {
     if (position) {
       position.category = research.category;
       position.researchScore = research.researchScore;
+      this.pumpPortal.subscribeTokenTrades([position.mint]);
       this.webServer.broadcastLog(`[AI Brain] Bought [${research.category}] ${position.symbol} (${finalSizeSol.toFixed(3)} SOL, ${aiDecision.confidenceScore}% conf)`);
+      await this.notificationService.notifyBuy(position, this.config.tradingMode);
+      await this.telegramBot.notifyBuy(position, finalSizeSol);
+      await this.syncAndRenderDashboard();
+    }
+  }
+
+  private async executeStrategyTradeBuy(
+    trade: TradeEvent,
+    strategyName: string,
+    reason: string,
+    sizeMultiplier: number = 1.0
+  ): Promise<void> {
+    const symbol = this.tokenSymbolMap.get(trade.mint) || trade.mint.substring(0, 6).toUpperCase();
+    const mockToken: TokenCreationEvent = {
+      signature: trade.signature,
+      mint: trade.mint,
+      traderPublicKey: trade.traderPublicKey,
+      txType: 'create',
+      initialBuy: this.config.solPerTrade,
+      bondingCurveKey: trade.bondingCurveKey,
+      vTokensInBondingCurve: trade.vTokensInBondingCurve,
+      vSolInBondingCurve: trade.vSolInBondingCurve,
+      marketCapSol: trade.marketCapSol,
+      name: `${symbol} Token`,
+      symbol: symbol,
+      uri: '',
+      timestamp: Date.now()
+    };
+
+    const currentBal = this.config.tradingMode === 'live' ? await this.solanaService.getBalance() : (this.paperTrader?.getBalance() || 1.0);
+    const baseDynamicSizeSol = this.positionSizer.calculateTradeSize(80, 50, 50, currentBal);
+    const finalSizeSol = Number((baseDynamicSizeSol * sizeMultiplier).toFixed(4));
+    const effectiveSlippage = this.config.slippagePercent;
+
+    console.log(
+      chalk.magenta.bold(
+        `\n[Strategy Triggered] 🎯 [${strategyName}] ${symbol}\n` +
+        `  • Reason: ${reason}\n` +
+        `  • Trade Size: ${finalSizeSol.toFixed(4)} SOL\n` +
+        `  • Mint: ${trade.mint}`
+      )
+    );
+
+    let position: Position | null = null;
+    if (this.config.tradingMode === 'live' && this.liveTrader) {
+      position = await this.liveTrader.executeBuy(
+        mockToken,
+        [strategyName, 'Momentum'],
+        strategyName,
+        80,
+        reason,
+        finalSizeSol,
+        effectiveSlippage
+      );
+    } else if (this.paperTrader) {
+      position = this.paperTrader.simulateBuy(
+        mockToken,
+        [strategyName, 'Momentum'],
+        strategyName,
+        80,
+        reason,
+        finalSizeSol,
+        effectiveSlippage
+      );
+    }
+
+    if (position) {
+      this.passedTokensCount++;
+      this.pumpPortal.subscribeTokenTrades([position.mint]);
+      this.webServer.broadcastLog(`[${strategyName}] Bought ${position.symbol} (${finalSizeSol.toFixed(3)} SOL) - ${reason}`);
       await this.notificationService.notifyBuy(position, this.config.tradingMode);
       await this.telegramBot.notifyBuy(position, finalSizeSol);
       await this.syncAndRenderDashboard();
@@ -396,39 +467,18 @@ export class PumpFunAgent {
 
     if (!isAlreadyOpen && this.copyTrader.shouldCopy(trade)) {
       this.webServer.broadcastLog(`Copy-trade triggered for alpha wallet on ${trade.mint}`);
-      const mockToken: TokenCreationEvent = {
-        signature: trade.signature,
-        mint: trade.mint,
-        traderPublicKey: trade.traderPublicKey,
-        txType: 'create',
-        initialBuy: this.config.solPerTrade,
-        name: this.tokenSymbolMap.get(trade.mint) ? `${symbol} Token` : 'Alpha Target',
-        symbol: symbol !== 'UNKNOWN' ? symbol : 'ALPHA',
-        uri: '',
-        timestamp: Date.now()
-      };
-      await this.handleNewToken(mockToken);
+      await this.executeStrategyTradeBuy(trade, 'COPY_WHALE', 'Alpha Target Follower', 1.0);
     }
 
     if (!isAlreadyOpen) {
       const stratDecision = this.strategyManager.evaluateTradeTick(trade);
       if (stratDecision.shouldBuy) {
-        const mockToken: TokenCreationEvent = {
-          signature: trade.signature,
-          mint: trade.mint,
-          traderPublicKey: trade.traderPublicKey,
-          txType: 'create',
-          initialBuy: this.config.solPerTrade,
-          bondingCurveKey: trade.bondingCurveKey,
-          vTokensInBondingCurve: trade.vTokensInBondingCurve,
-          vSolInBondingCurve: trade.vSolInBondingCurve,
-          marketCapSol: trade.marketCapSol,
-          name: this.tokenSymbolMap.get(trade.mint) ? `${symbol} Token` : 'Breakout Token',
-          symbol: symbol !== 'UNKNOWN' ? symbol : 'BREAKOUT',
-          uri: '',
-          timestamp: Date.now()
-        };
-        await this.handleNewToken(mockToken);
+        await this.executeStrategyTradeBuy(
+          trade,
+          this.strategyCoordinator.getActiveStrategy(),
+          stratDecision.reason,
+          stratDecision.suggestedSizeMultiplier
+        );
       }
     }
 

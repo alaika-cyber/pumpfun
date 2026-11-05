@@ -40,19 +40,22 @@ export class RugCheckService {
         }
       }
 
-      if (devData.count > 3) {
+      if (devData.count > 5) {
         risks.push(`Dev is spam creating tokens (${devData.count} launches in 10m)`);
-        riskScore += 40;
+        riskScore += 35;
       }
     }
 
-    // 2. Holder Concentration Check
+    // 2. Holder Concentration Check with Fast-Timeout RPC Protection
     if (mint && mint.length >= 32 && mint.length <= 44) {
       try {
         const mintPubkey = new PublicKey(mint);
-        const largestAccounts = await this.connection.getTokenLargestAccounts(mintPubkey);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('RPC timeout')), 1000));
+        const accountsPromise = this.connection.getTokenLargestAccounts(mintPubkey);
         
-        if (largestAccounts && largestAccounts.value && largestAccounts.value.length > 0) {
+        const largestAccounts: any = await Promise.race([accountsPromise, timeoutPromise]);
+        
+        if (largestAccounts && largestAccounts.value && largestAccounts.value.length > 1) {
           const nonPoolHolders = largestAccounts.value.slice(1);
           let topHoldersSum = 0;
           for (const h of nonPoolHolders.slice(0, 5)) {
@@ -60,13 +63,13 @@ export class RugCheckService {
           }
 
           const topHoldersRatio = topHoldersSum / 1e15; // 1B tokens with 6 decimals = 1e15 units
-          if (topHoldersRatio > 0.25) {
+          if (topHoldersRatio > 0.30) {
             risks.push(`Top 5 non-pool holders control ${(topHoldersRatio * 100).toFixed(1)}% of total supply`);
             riskScore += 35;
           }
         }
       } catch {
-        // Safe fallback on RPC timeout
+        // Safe fallback on RPC timeout - does not block evaluation
       }
     }
 

@@ -42,21 +42,15 @@ export class FilterEngine {
       }
     }
 
-    // 5. Dev Initial Buy Filter
+    // 5. Dev Initial Buy Filter (Allows fair launches (0 SOL) and safe initial buys)
     const rawInitialBuy = (token.initialBuy && !isNaN(token.initialBuy) && token.initialBuy > 0) ? token.initialBuy : 0;
     const initialBuySol = rawInitialBuy > 1000000 ? rawInitialBuy / 1e9 : rawInitialBuy;
 
-    if (initialBuySol < this.config.minDevInitialBuySol) {
+    const maxAllowedDevBuy = this.config.maxDevInitialBuySol || 4.0;
+    if (initialBuySol > maxAllowedDevBuy) {
       return {
         passed: false,
-        reason: `Dev initial buy too low: ${initialBuySol.toFixed(3)} SOL (Min: ${this.config.minDevInitialBuySol} SOL)`
-      };
-    }
-
-    if (initialBuySol > this.config.maxDevInitialBuySol) {
-      return {
-        passed: false,
-        reason: `Dev initial buy too high (dump risk): ${initialBuySol.toFixed(3)} SOL (Max: ${this.config.maxDevInitialBuySol} SOL)`
+        reason: `Dev initial buy too high (dump risk): ${initialBuySol.toFixed(3)} SOL (Max: ${maxAllowedDevBuy} SOL)`
       };
     }
 
