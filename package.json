@@ -9,6 +9,7 @@
     "paper": "ts-node src/index.ts --mode=paper",
     "live": "ts-node src/index.ts --mode=live",
     "test-wallet": "ts-node src/scripts/testWallet.ts",
+    "close-live": "ts-node src/scripts/closeLivePosition.ts",
     "withdraw": "ts-node src/scripts/withdraw.ts",
     "sweep": "ts-node src/scripts/withdraw.ts"
   },
