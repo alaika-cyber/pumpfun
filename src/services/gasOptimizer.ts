@@ -3,12 +3,16 @@ import chalk from 'chalk';
 
 export class GasOptimizer {
   private static readonly PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
-  private connection: Connection;
+  private getConnection: () => Connection;
   private cachedFeeMicroLamports: number = 50000;
   private lastFetchTime: number = 0;
 
-  constructor(connection: Connection) {
-    this.connection = connection;
+  constructor(connectionOrGetter: Connection | (() => Connection)) {
+    if (typeof connectionOrGetter === 'function') {
+      this.getConnection = connectionOrGetter;
+    } else {
+      this.getConnection = () => connectionOrGetter;
+    }
   }
 
   public async getOptimalPriorityFee(multiplier: number = 1.2): Promise<number> {
@@ -19,7 +23,7 @@ export class GasOptimizer {
     }
 
     try {
-      const fees = await this.connection.getRecentPrioritizationFees({
+      const fees = await this.getConnection().getRecentPrioritizationFees({
         lockedWritableAccounts: [GasOptimizer.PUMP_PROGRAM_ID]
       });
 

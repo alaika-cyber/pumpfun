@@ -15,6 +15,7 @@ export class PumpPortalService {
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private activeSubscriptions: Set<string> = new Set();
   private pendingSubscriptionQueue: Set<string> = new Set();
+  private isIntentionallyClosed: boolean = false;
 
   private onNewTokenCallback?: (token: TokenCreationEvent) => void;
   private onTokenTradeCallback?: (trade: TradeEvent) => void;
@@ -25,6 +26,7 @@ export class PumpPortalService {
     onNewToken: (token: TokenCreationEvent) => void,
     onTokenTrade: (trade: TradeEvent) => void
   ): void {
+    this.isIntentionallyClosed = false;
     this.onNewTokenCallback = onNewToken;
     this.onTokenTradeCallback = onTokenTrade;
     this.initWebSocket();
@@ -71,7 +73,9 @@ export class PumpPortalService {
     this.ws.on('close', () => {
       this.isConnected = false;
       if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-      this.scheduleReconnect();
+      if (!this.isIntentionallyClosed) {
+        this.scheduleReconnect();
+      }
     });
 
     this.ws.on('error', (err: any) => {
@@ -242,10 +246,20 @@ export class PumpPortalService {
   }
 
   public disconnect(): void {
-    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-    if (this.ws) {
-      this.ws.close();
+    this.isIntentionallyClosed = true;
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
     }
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.close();
+      this.ws = null;
+    }
+    this.isConnected = false;
   }
 }

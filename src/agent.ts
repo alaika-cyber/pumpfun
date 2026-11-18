@@ -67,6 +67,8 @@ export class PumpFunAgent {
   private backtester: Backtester;
 
   private isRunning: boolean = false;
+  private isEvaluatingPositions: boolean = false;
+  private isSyncingDashboard: boolean = false;
   private monitorInterval: NodeJS.Timeout | null = null;
   private dashboardInterval: NodeJS.Timeout | null = null;
   private processedTokensCount: number = 0;
@@ -90,7 +92,7 @@ export class PumpFunAgent {
     this.aiBrain = new AIBrain(this.sqliteMemory);
     this.profitVault = new ProfitVault(config, this.sqliteMemory, this.solanaService);
     this.strategyManager = new StrategyManager(config.activeStrategy);
-    this.gasOptimizer = new GasOptimizer(this.solanaService.getConnection());
+    this.gasOptimizer = new GasOptimizer(() => this.solanaService.getConnection());
     this.researchEngine = new ResearchEngine();
     this.whaleTracker = new WhaleTracker();
     this.positionSizer = new PositionSizer(config);
@@ -124,7 +126,7 @@ export class PumpFunAgent {
 
     this.telegramBot.registerHandlers({
       getStatus: async () => {
-        const stats = this.config.tradingMode === 'live' ? await this.liveTrader!.getStats() : this.paperTrader!.getStats();
+        const stats = await this.getTraderStats();
         const mode = this.config.tradingMode.toUpperCase();
         const strat = this.strategyCoordinator.getActiveStrategy();
         const pnlEmoji = stats.realizedPnlSol >= 0 ? '🟢' : '🔴';
@@ -213,11 +215,15 @@ export class PumpFunAgent {
     );
 
     this.monitorInterval = setInterval(() => {
-      this.evaluateActivePositions();
+      this.evaluateActivePositions().catch(err => {
+        console.error(chalk.red(`[Agent] Position monitor error: ${err?.message || err}`));
+      });
     }, 1000);
 
-    this.dashboardInterval = setInterval(async () => {
-      await this.syncAndRenderDashboard();
+    this.dashboardInterval = setInterval(() => {
+      this.syncAndRenderDashboard().catch(err => {
+        console.error(chalk.red(`[Agent] Dashboard render error: ${err?.message || err}`));
+      });
     }, 4000);
   }
 
@@ -245,6 +251,15 @@ export class PumpFunAgent {
 
     const filterResult = this.filterEngine.evaluateToken(token);
     if (!filterResult.passed) return;
+
+    // Bug Fix #1: Check position capacity & circuit breaker BEFORE expensive AI/research calls
+    const canOpen = this.config.tradingMode === 'live'
+      ? await this.liveTrader?.canOpenPosition(token.mint)
+      : this.paperTrader?.canOpenPosition(token.mint);
+    if (!canOpen) return;
+
+    const stats = await this.getTraderStats();
+    if (this.riskManager.checkCircuitBreaker(stats.realizedPnlSol)) return;
 
     const research = await this.researchEngine.conductResearch(token);
     const sentiment = this.socialSentiment.analyzeToken(token);
@@ -291,7 +306,6 @@ export class PumpFunAgent {
       currentBal
     );
 
-    const stats = this.config.tradingMode === 'live' ? await this.liveTrader!.getStats() : this.paperTrader!.getStats();
     const compoundedSizeSol = this.reinvestmentEngine.calculateCompoundedTradeSize(stats.realizedPnlSol, currentBal);
     const finalSizeSol = Number((Math.max(baseDynamicSizeSol, compoundedSizeSol) * recoveryMultiplier).toFixed(4));
 
@@ -507,15 +521,21 @@ export class PumpFunAgent {
   }
 
   private async evaluateActivePositions(): Promise<void> {
-    const positions = this.config.tradingMode === 'live'
-      ? (this.liveTrader?.getOpenPositions() || [])
-      : (this.paperTrader?.getOpenPositions() || []);
+    if (this.isEvaluatingPositions) return;
+    this.isEvaluatingPositions = true;
+    try {
+      const positions = this.config.tradingMode === 'live'
+        ? (this.liveTrader?.getOpenPositions() || [])
+        : (this.paperTrader?.getOpenPositions() || []);
 
-    for (const pos of positions) {
-      const exitSignal = this.riskManager.updatePositionPrice(pos, pos.currentPriceSol);
-      if (exitSignal) {
-        await this.executeExit(pos, exitSignal);
+      for (const pos of positions) {
+        const exitSignal = this.riskManager.updatePositionPrice(pos, pos.currentPriceSol);
+        if (exitSignal) {
+          await this.executeExit(pos, exitSignal);
+        }
       }
+    } finally {
+      this.isEvaluatingPositions = false;
     }
   }
 
@@ -582,90 +602,129 @@ export class PumpFunAgent {
     }
   }
 
-  public async syncAndRenderDashboard(): Promise<void> {
-    const stats = this.config.tradingMode === 'live'
-      ? await this.liveTrader!.getStats()
-      : this.paperTrader!.getStats();
-
-    const openPositions: Position[] = this.config.tradingMode === 'live'
-      ? (this.liveTrader?.getOpenPositions() || [])
-      : (this.paperTrader?.getOpenPositions() || []);
-
-    const analytics = this.journal.getAnalytics();
-    const vaultCycles = await this.profitVault.getHistory();
-    const sectorStats = this.researchEngine.getSectorSummary();
-    const whaleAlerts = this.whaleTracker.getRecentAlerts();
-    const predictions = Array.from(this.latestPredictions.values()).slice(-6);
-
-    const regime = this.strategyCoordinator.evaluateRegime(
-      stats.winRate,
-      stats.realizedPnlSol,
-      predictions.filter(p => p.isImminent).length
-    );
-
-    this.webServer.broadcastState({
-      config: this.config,
-      stats,
-      analytics,
-      positions: openPositions,
-      journalEntries: this.journal.getEntries().slice(-15).reverse(),
-      vaultCycles: vaultCycles,
-      sectorStats: sectorStats,
-      whaleAlerts: whaleAlerts,
-      predictions: predictions,
-      marketRegime: regime,
-      totalVaultedSol: this.profitVault.getTotalVaulted(),
-      vaultCycleCount: this.profitVault.getCycleCount(),
-      scannedCount: this.processedTokensCount,
-      passedCount: this.passedTokensCount,
-      activeStrategy: this.strategyCoordinator.getActiveStrategy()
-    });
-
-    const pnlColor = stats.realizedPnlSol >= 0 ? chalk.green : chalk.red;
-
-    console.log(chalk.gray('\n---------------- [QUANTUM MATRIX v9.0 DASHBOARD] ----------------'));
-    console.log(
-      `Mode: ${chalk.bold.yellow(this.config.tradingMode.toUpperCase())} | ` +
-      `Strategy: ${chalk.bold.cyan(this.strategyCoordinator.getActiveStrategy())} | ` +
-      `Bankroll: ${chalk.bold(stats.currentBalanceSol.toFixed(4))} SOL | ` +
-      `Vault: ${chalk.bold.yellow('🔒 ' + this.profitVault.getTotalVaulted().toFixed(4) + ' SOL (Cycle #' + this.profitVault.getCycleCount() + ')')} | ` +
-      `Realized PnL: ${pnlColor((stats.realizedPnlSol >= 0 ? '+' : '') + stats.realizedPnlSol.toFixed(4) + ' SOL')}`
-    );
-
-    if (openPositions.length > 0) {
-      const table = new Table({
-        head: ['Token', 'Sector', 'AI Conf', 'Invested', 'Entry', 'Current', 'PnL %', 'PnL (SOL)'],
-        style: { head: ['cyan'] }
-      });
-
-      for (const pos of openPositions) {
-        const itemPnlColor = pos.pnlPercent >= 0 ? chalk.green : chalk.red;
-        table.push([
-          pos.symbol,
-          pos.category || 'TECH_AI',
-          pos.aiConfidence ? `${pos.aiConfidence}%` : 'N/A',
-          `${pos.investedSol.toFixed(4)} SOL`,
-          pos.entryPriceSol.toExponential(2),
-          pos.currentPriceSol.toExponential(2),
-          itemPnlColor(`${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent.toFixed(2)}%`),
-          itemPnlColor(`${pos.pnlSol >= 0 ? '+' : ''}${pos.pnlSol.toFixed(4)}`)
-        ]);
-      }
-      console.log(table.toString());
-    } else {
-      console.log(chalk.gray('  (Quantum Matrix monitoring Bonding Curves, Telegram Bot & Sandwich Guard...)'));
+  private async getTraderStats() {
+    if (this.config.tradingMode === 'live' && this.liveTrader) {
+      return await this.liveTrader.getStats();
+    } else if (this.paperTrader) {
+      return this.paperTrader.getStats();
     }
-    console.log(chalk.gray('-------------------------------------------------------------------\n'));
+    return {
+      startingBalanceSol: 0,
+      currentBalanceSol: 0,
+      vaultedBalanceSol: 0,
+      vaultCyclesCompleted: 0,
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      realizedPnlSol: 0,
+      totalVolumeSol: 0,
+      winRate: 0,
+      profitFactor: 0,
+      expectancySol: 0,
+      equityCurve: []
+    };
   }
 
-  public stop(): void {
+  public async syncAndRenderDashboard(): Promise<void> {
+    if (this.isSyncingDashboard) return;
+    this.isSyncingDashboard = true;
+    try {
+      const stats = await this.getTraderStats();
+
+      const openPositions: Position[] = this.config.tradingMode === 'live'
+        ? (this.liveTrader?.getOpenPositions() || [])
+        : (this.paperTrader?.getOpenPositions() || []);
+
+      const analytics = this.journal.getAnalytics();
+      const vaultCycles = await this.profitVault.getHistory();
+      const sectorStats = this.researchEngine.getSectorSummary();
+      const whaleAlerts = this.whaleTracker.getRecentAlerts();
+      const predictions = Array.from(this.latestPredictions.values()).slice(-6);
+
+      const regime = this.strategyCoordinator.evaluateRegime(
+        stats.winRate,
+        stats.realizedPnlSol,
+        predictions.filter(p => p.isImminent).length
+      );
+
+      if (this.config.activeStrategy !== regime.currentStrategy) {
+        this.strategyManager.setActiveStrategy(regime.currentStrategy);
+        this.config.activeStrategy = regime.currentStrategy;
+      }
+
+      this.webServer.broadcastState({
+        config: this.config,
+        stats,
+        analytics,
+        positions: openPositions,
+        journalEntries: this.journal.getEntries().slice(-15).reverse(),
+        vaultCycles: vaultCycles,
+        sectorStats: sectorStats,
+        whaleAlerts: whaleAlerts,
+        predictions: predictions,
+        marketRegime: regime,
+        totalVaultedSol: this.profitVault.getTotalVaulted(),
+        vaultCycleCount: this.profitVault.getCycleCount(),
+        scannedCount: this.processedTokensCount,
+        passedCount: this.passedTokensCount,
+        activeStrategy: this.strategyCoordinator.getActiveStrategy()
+      });
+
+      const pnlColor = stats.realizedPnlSol >= 0 ? chalk.green : chalk.red;
+
+      console.log(chalk.gray('\n---------------- [QUANTUM MATRIX v9.0 DASHBOARD] ----------------'));
+      console.log(
+        `Mode: ${chalk.bold.yellow(this.config.tradingMode.toUpperCase())} | ` +
+        `Strategy: ${chalk.bold.cyan(this.strategyCoordinator.getActiveStrategy())} | ` +
+        `Bankroll: ${chalk.bold(stats.currentBalanceSol.toFixed(4))} SOL | ` +
+        `Vault: ${chalk.bold.yellow('🔒 ' + this.profitVault.getTotalVaulted().toFixed(4) + ' SOL (Cycle #' + this.profitVault.getCycleCount() + ')')} | ` +
+        `Realized PnL: ${pnlColor((stats.realizedPnlSol >= 0 ? '+' : '') + stats.realizedPnlSol.toFixed(4) + ' SOL')}`
+      );
+
+      if (openPositions.length > 0) {
+        const table = new Table({
+          head: ['Token', 'Sector', 'AI Conf', 'Invested', 'Entry', 'Current', 'PnL %', 'PnL (SOL)'],
+          style: { head: ['cyan'] }
+        });
+
+        for (const pos of openPositions) {
+          const itemPnlColor = pos.pnlPercent >= 0 ? chalk.green : chalk.red;
+          table.push([
+            pos.symbol,
+            pos.category || 'TECH_AI',
+            pos.aiConfidence ? `${pos.aiConfidence}%` : 'N/A',
+            `${pos.investedSol.toFixed(4)} SOL`,
+            pos.entryPriceSol.toExponential(2),
+            pos.currentPriceSol.toExponential(2),
+            itemPnlColor(`${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent.toFixed(2)}%`),
+            itemPnlColor(`${pos.pnlSol >= 0 ? '+' : ''}${pos.pnlSol.toFixed(4)}`)
+          ]);
+        }
+        console.log(table.toString());
+      } else {
+        console.log(chalk.gray('  (Quantum Matrix monitoring Bonding Curves, Telegram Bot & Sandwich Guard...)'));
+      }
+      console.log(chalk.gray('-------------------------------------------------------------------\n'));
+    } finally {
+      this.isSyncingDashboard = false;
+    }
+  }
+
+  public async stop(): Promise<void> {
     this.isRunning = false;
-    if (this.monitorInterval) clearInterval(this.monitorInterval);
-    if (this.dashboardInterval) clearInterval(this.dashboardInterval);
+    if (this.monitorInterval) {
+      clearInterval(this.monitorInterval);
+      this.monitorInterval = null;
+    }
+    if (this.dashboardInterval) {
+      clearInterval(this.dashboardInterval);
+      this.dashboardInterval = null;
+    }
     this.telegramBot.stop();
     this.rpcFailover.stop();
     this.pumpPortal.disconnect();
     this.webServer.stop();
+    await this.sqliteMemory.close();
     console.log(chalk.yellow('[Agent] Stopped cleanly. All positions and memory persisted in SQLite.'));
   }
 }

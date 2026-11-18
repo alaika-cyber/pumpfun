@@ -34,12 +34,14 @@ export class TelegramBot {
 
     if (this.isEnabled) {
       console.log(chalk.green.bold('[Telegram Bot] 📱 Ultra-Control Telegram Matrix Controller online!'));
-      this.startPolling();
     }
   }
 
   public registerHandlers(handlers: TelegramBotHandlers): void {
     this.handlers = handlers;
+    if (this.isEnabled && !this.isPolling) {
+      this.startPolling();
+    }
   }
 
   private escapeHtml(text: string): string {
@@ -753,6 +755,10 @@ export class TelegramBot {
 
   public stop(): void {
     this.isEnabled = false;
-    if (this.pollTimeout) clearTimeout(this.pollTimeout);
+    this.isPolling = false;
+    if (this.pollTimeout) {
+      clearTimeout(this.pollTimeout);
+      this.pollTimeout = null;
+    }
   }
 }

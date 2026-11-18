@@ -458,4 +458,13 @@ export class SQLiteMemory {
     }
     return defaultValue;
   }
+
+  public async close(): Promise<void> {
+    if (this.db) {
+      try {
+        await this.db.close();
+      } catch {}
+      this.db = null;
+    }
+  }
 }

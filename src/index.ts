@@ -39,9 +39,13 @@ async function main() {
 
   const agent = new PumpFunAgent(config);
 
-  const shutdown = () => {
+  const shutdown = async () => {
     console.log(chalk.yellow('\n[System] Graceful shutdown signal received...'));
-    agent.stop();
+    try {
+      await agent.stop();
+    } catch (err: any) {
+      console.error(chalk.red(`[System] Error during stop: ${err?.message || err}`));
+    }
     process.exit(0);
   };
 

@@ -164,6 +164,7 @@ export class PaperTrader {
         await this.sqlite.removeActivePosition(position.mint);
       }
     } else {
+      position.status = 'OPEN';
       if (this.sqlite) {
         await this.sqlite.saveActivePosition(position);
       }

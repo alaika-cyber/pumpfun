@@ -9,11 +9,11 @@ export interface RugCheckResult {
 }
 
 export class RugCheckService {
-  private connection: Connection;
+  private solanaService: SolanaService;
   private devHistoryMap: Map<string, { count: number; lastSeen: number }> = new Map();
 
   constructor(solanaService: SolanaService) {
-    this.connection = solanaService.getConnection();
+    this.solanaService = solanaService;
   }
 
   public async evaluateToken(mint: string, creatorPubkey?: string): Promise<RugCheckResult> {
@@ -51,7 +51,7 @@ export class RugCheckService {
       try {
         const mintPubkey = new PublicKey(mint);
         const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('RPC timeout')), 1000));
-        const accountsPromise = this.connection.getTokenLargestAccounts(mintPubkey);
+        const accountsPromise = this.solanaService.getConnection().getTokenLargestAccounts(mintPubkey);
         
         const largestAccounts: any = await Promise.race([accountsPromise, timeoutPromise]);
         

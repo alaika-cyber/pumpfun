@@ -152,6 +152,9 @@ export class WebServer {
   }
 
   public stop(): void {
+    try {
+      this.io.close();
+    } catch {}
     this.server.close();
   }
 }

@@ -39,7 +39,19 @@ export class RiskManager {
     const now = Date.now();
     const holdTimeSeconds = Math.max(0, (now - position.buyTimestamp) / 1000);
 
-    // 1. Dynamic Breakeven Stop Ladder (Protects winners from turning into losers)
+    // 1. Hard Stop-Loss Check (Highest Priority Protection)
+    if (position.pnlPercent <= this.config.stopLossPercent) {
+      return {
+        action: 'SELL',
+        mint: position.mint,
+        reason: 'STOP_LOSS',
+        sellRatio: 1.0,
+        pnlPercent: position.pnlPercent,
+        pnlSol: position.pnlSol
+      };
+    }
+
+    // 2. Dynamic Breakeven Stop Ladder (Protects winners from turning into losers)
     if (position.tp2Triggered && position.pnlPercent <= 30) {
       return {
         action: 'SELL',
@@ -54,18 +66,6 @@ export class RiskManager {
         action: 'SELL',
         mint: position.mint,
         reason: 'BREAKEVEN_STOP',
-        sellRatio: 1.0,
-        pnlPercent: position.pnlPercent,
-        pnlSol: position.pnlSol
-      };
-    }
-
-    // 2. Hard Stop-Loss Check
-    if (position.pnlPercent <= this.config.stopLossPercent) {
-      return {
-        action: 'SELL',
-        mint: position.mint,
-        reason: 'STOP_LOSS',
         sellRatio: 1.0,
         pnlPercent: position.pnlPercent,
         pnlSol: position.pnlSol

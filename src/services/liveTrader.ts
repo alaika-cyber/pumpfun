@@ -87,14 +87,15 @@ export class LiveTrader {
     slippagePercent?: number
   ): Promise<Position | null> {
     if (this.isExecutingTrade) return null;
-    const canBuy = await this.canOpenPosition(token.mint);
-    if (!canBuy) return null;
-
-    const actualTradeSize = Math.max(0.001, tradeSizeSol || this.config.solPerTrade);
-    const actualSlippage = typeof slippagePercent === 'number' ? slippagePercent : this.config.slippagePercent;
-
     this.isExecutingTrade = true;
+
     try {
+      const canBuy = await this.canOpenPosition(token.mint);
+      if (!canBuy) return null;
+
+      const actualTradeSize = Math.max(0.001, tradeSizeSol || this.config.solPerTrade);
+      const actualSlippage = typeof slippagePercent === 'number' ? slippagePercent : this.config.slippagePercent;
+
       console.log(chalk.yellow(`[LiveTrader] Sending on-chain BUY for ${token.symbol} (${token.mint}) [${strategyName}]...`));
       const res = await this.pumpPortal.executeLiveTrade({
         action: 'buy',
