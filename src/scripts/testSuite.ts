@@ -147,32 +147,44 @@ async function runTests() {
   const evalDead = strategyManager.evaluateNewToken(deadToken, 85);
   assert(!evalDead.shouldBuy, 'MOMENTUM_SCALP rejects blind buying dead token at block 0');
 
-  // 9. StrategyManager: Triggering On Confirmed Live Momentum
-  const tradeTick1: any = {
-    mint: 'MovingCoin1111111111111111111111111111111',
-    traderPublicKey: 'buyer1',
-    txType: 'buy',
-    solAmount: 0.15,
-    timestamp: Date.now()
-  };
-  const tradeTick2: any = {
-    mint: 'MovingCoin1111111111111111111111111111111',
-    traderPublicKey: 'buyer2',
-    txType: 'buy',
-    solAmount: 0.20,
-    timestamp: Date.now()
-  };
-  const tradeTick3: any = {
-    mint: 'MovingCoin1111111111111111111111111111111',
-    traderPublicKey: 'buyer3',
-    txType: 'buy',
-    solAmount: 0.15,
-    timestamp: Date.now()
-  };
-  strategyManager.evaluateTradeTick(tradeTick1);
-  strategyManager.evaluateTradeTick(tradeTick2);
-  const evalMoving = strategyManager.evaluateTradeTick(tradeTick3);
+  // 9. StrategyManager: Triggering On Confirmed Heavy Live Momentum
+  const tradeTicks: any[] = [
+    { mint: 'MovingCoin1111111111111111111111111111111', traderPublicKey: 'buyer1', txType: 'buy', solAmount: 0.25, timestamp: Date.now() },
+    { mint: 'MovingCoin1111111111111111111111111111111', traderPublicKey: 'buyer2', txType: 'buy', solAmount: 0.25, timestamp: Date.now() },
+    { mint: 'MovingCoin1111111111111111111111111111111', traderPublicKey: 'buyer3', txType: 'buy', solAmount: 0.25, timestamp: Date.now() },
+    { mint: 'MovingCoin1111111111111111111111111111111', traderPublicKey: 'buyer4', txType: 'buy', solAmount: 0.25, timestamp: Date.now() },
+    { mint: 'MovingCoin1111111111111111111111111111111', traderPublicKey: 'buyer5', txType: 'buy', solAmount: 0.25, timestamp: Date.now() }
+  ];
+  for (let i = 0; i < 4; i++) {
+    strategyManager.evaluateTradeTick(tradeTicks[i]);
+  }
+  const evalMoving = strategyManager.evaluateTradeTick(tradeTicks[4]);
   assert(evalMoving.shouldBuy, `MOMENTUM_SCALP triggers on confirmed moving coin (${evalMoving.reason})`);
+
+  // 10. CopyTrader: Shark Wallets (@The__Solstice & @crackthecode)
+  const { CopyTrader } = require('../services/copyTrader');
+  const copyTrader = new CopyTrader();
+  assert(copyTrader.isEnabled(), 'CopyTrader is enabled with shark wallets');
+  
+  const solsticeTrade: any = {
+    mint: 'TargetCoin1111111111111111111111111111111',
+    traderPublicKey: '4ugDhHJ8XDXAeABmrNmGffFaLbJb9BkPyiFGVSV9ocwo',
+    txType: 'buy',
+    solAmount: 0.5,
+    timestamp: Date.now()
+  };
+  assert(copyTrader.shouldCopy(solsticeTrade), 'CopyTrader triggers buy when @The__Solstice buys');
+  assert(copyTrader.getWalletLabel(solsticeTrade.traderPublicKey).includes('@The__Solstice'), 'Identifies @The__Solstice shark label');
+
+  const crackTrade: any = {
+    mint: 'TargetCoin2222222222222222222222222222222',
+    traderPublicKey: 'CcJX975YTw8owyuRwyC1m9pyC3ZhRp89VM12pfUfDBcf',
+    txType: 'buy',
+    solAmount: 0.5,
+    timestamp: Date.now()
+  };
+  assert(copyTrader.shouldCopy(crackTrade), 'CopyTrader triggers buy when @crackthecode buys');
+  assert(copyTrader.getWalletLabel(crackTrade.traderPublicKey).includes('@crackthecode'), 'Identifies @crackthecode shark label');
 
   console.log(`\nTEST SUMMARY: ${passed} Passed, ${failed} Failed`);
   if (failed > 0) process.exit(1);

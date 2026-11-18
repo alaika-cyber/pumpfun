@@ -25,49 +25,14 @@ export class StrategyManager {
     this.activeStrategy = strat;
   }
 
-  public evaluateNewToken(token: TokenCreationEvent, viralityScore: number): StrategyDecision {
-    const initialSol = (token.initialBuy && !isNaN(token.initialBuy) && token.initialBuy > 0)
-      ? (token.initialBuy > 1e6 ? token.initialBuy / 1e9 : token.initialBuy)
-      : 0;
-
-    switch (this.activeStrategy) {
-      case 'SNIPER':
-        // Only trigger instant creation snipe if developer committed significant capital (>= 0.75 SOL)
-        // Otherwise, send to Candidate Watchlist to confirm real buyer volume & momentum first
-        if (initialSol >= 0.75 && viralityScore >= 60) {
-          return {
-            shouldBuy: true,
-            reason: `High-conviction dev launch (${initialSol.toFixed(2)} SOL dev buy, Virality: ${viralityScore}/100)`,
-            suggestedSizeMultiplier: 1.1
-          };
-        }
-        return {
-          shouldBuy: false,
-          reason: `Low initial dev buy (${initialSol.toFixed(3)} SOL) - routing to Momentum Watchlist to verify live trade velocity`,
-          suggestedSizeMultiplier: 1.0
-        };
-
-      case 'MIGRATION_KOTH':
-        return {
-          shouldBuy: false,
-          reason: 'Migration strategy monitors bonding curve velocity (Raydium migration corridor)',
-          suggestedSizeMultiplier: 1.0
-        };
-
-      case 'MOMENTUM_SCALP':
-        return {
-          shouldBuy: false,
-          reason: 'Momentum Scalper requires live trade tick velocity and confirmed buyer momentum',
-          suggestedSizeMultiplier: 1.0
-        };
-
-      case 'COPY_WHALE':
-        return {
-          shouldBuy: false,
-          reason: 'Copy Whale strategy only follows target wallet trades',
-          suggestedSizeMultiplier: 1.0
-        };
-    }
+  public evaluateNewToken(_token: TokenCreationEvent, _viralityScore: number): StrategyDecision {
+    // NEVER buy new coins at creation — all strategies route to the Candidate Watchlist
+    // Tokens must prove live buyer momentum, volume, and price movement before entry
+    return {
+      shouldBuy: false,
+      reason: 'All tokens routed to Momentum Watchlist — must confirm live trade velocity before entry',
+      suggestedSizeMultiplier: 1.0
+    };
   }
 
   public evaluateTradeTick(trade: TradeEvent): StrategyDecision {
@@ -97,11 +62,11 @@ export class StrategyManager {
       }
     }
 
-    // Strategy 1: Migration / KOTH Breakout
+    // Strategy 1: Migration / KOTH Breakout — only via confirmed candidate watchlist momentum
     if (this.activeStrategy === 'MIGRATION_KOTH') {
       if (trade.vSolInBondingCurve) {
         const progress = BondingCurveCalculator.calculateProgress(trade.vSolInBondingCurve);
-        if (progress >= 45 && progress <= 95 && window.buyVolumeSol >= 0.5) {
+        if (progress >= 45 && progress <= 95 && window.count >= 5 && window.buyVolumeSol >= 1.0) {
           return {
             shouldBuy: true,
             reason: `Raydium Migration velocity breakout! Progress: ${progress.toFixed(1)}% | 30s Buy Vol: ${window.buyVolumeSol.toFixed(2)} SOL`,
@@ -111,9 +76,9 @@ export class StrategyManager {
       }
     }
 
-    // Strategy 2: Momentum Scalper Surge
+    // Strategy 2: Momentum Scalper — requires heavy confirmed volume
     if (this.activeStrategy === 'MOMENTUM_SCALP') {
-      if (window.count >= 3 && window.buyVolumeSol >= 0.4) {
+      if (window.count >= 5 && window.buyVolumeSol >= 1.0) {
         return {
           shouldBuy: true,
           reason: `Momentum Flow Surge! ${window.count} trades with ${window.buyVolumeSol.toFixed(2)} SOL volume in 30s`,
@@ -122,11 +87,11 @@ export class StrategyManager {
       }
     }
 
-    // Strategy 3: Global Sniper Acceleration
-    if (this.activeStrategy === 'SNIPER' && window.count >= 4 && window.buyVolumeSol >= 0.6) {
+    // Strategy 3: Sniper Acceleration — requires strong confirmed momentum
+    if (this.activeStrategy === 'SNIPER' && window.count >= 6 && window.buyVolumeSol >= 1.5) {
       return {
         shouldBuy: true,
-        reason: `Secondary Momentum Breakout! ${window.count} buys with ${window.buyVolumeSol.toFixed(2)} SOL volume`,
+        reason: `Confirmed Momentum Breakout! ${window.count} buys with ${window.buyVolumeSol.toFixed(2)} SOL volume`,
         suggestedSizeMultiplier: 1.0
       };
     }

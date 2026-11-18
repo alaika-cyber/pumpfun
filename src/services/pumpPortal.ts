@@ -14,6 +14,7 @@ export class PumpPortalService {
   private reconnectAttempts: number = 0;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private activeSubscriptions: Set<string> = new Set();
+  private activeAccountSubscriptions: Set<string> = new Set();
   private pendingSubscriptionQueue: Set<string> = new Set();
   private isIntentionallyClosed: boolean = false;
 
@@ -46,6 +47,10 @@ export class PumpPortalService {
       // Flush and resubscribe active subscriptions
       if (this.activeSubscriptions.size > 0) {
         this.flushSubscriptions(Array.from(this.activeSubscriptions));
+      }
+
+      if (this.activeAccountSubscriptions.size > 0) {
+        this.flushAccountSubscriptions(Array.from(this.activeAccountSubscriptions));
       }
 
       if (this.pendingSubscriptionQueue.size > 0) {
@@ -195,6 +200,25 @@ export class PumpPortalService {
       keys: mints
     };
     this.ws.send(JSON.stringify(payload));
+  }
+
+  public subscribeAccountTrades(wallets: string[]): void {
+    if (!wallets || wallets.length === 0) return;
+    for (const w of wallets) {
+      this.activeAccountSubscriptions.add(w);
+    }
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.flushAccountSubscriptions(wallets);
+  }
+
+  private flushAccountSubscriptions(wallets: string[]): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || wallets.length === 0) return;
+    const payload = {
+      method: 'subscribeAccountTrade',
+      keys: wallets
+    };
+    this.ws.send(JSON.stringify(payload));
+    console.log(chalk.cyan(`[PumpPortal] 🐋 Subscribed to ${wallets.length} whale wallet(s) for copy-trading`));
   }
 
   public async executeLiveTrade(params: {

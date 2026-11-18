@@ -217,6 +217,10 @@ export class PumpFunAgent {
       this.handleTokenTrade.bind(this)
     );
 
+    if (this.copyTrader.isEnabled()) {
+      this.pumpPortal.subscribeAccountTrades(this.copyTrader.getTrackedWallets());
+    }
+
     this.monitorInterval = setInterval(() => {
       this.evaluateActivePositions().catch(err => {
         console.error(chalk.red(`[Agent] Position monitor error: ${err?.message || err}`));
@@ -260,15 +264,8 @@ export class PumpFunAgent {
       : this.paperTrader?.getPosition(token.mint)?.status === 'OPEN';
     if (isAlreadyOpen || this.candidateWatchlist.has(token.mint)) return;
 
-    // Check if initial instant snipe is triggered (e.g. SNIPER with high initial dev buy >= 0.75 SOL)
-    const stratDecision = this.strategyManager.evaluateNewToken(token, 80);
-    if (stratDecision.shouldBuy) {
-      await this.executeInstantSnipe(token, stratDecision.reason);
-      return;
-    }
-
-    // Default & Momentum Scalper: Route to Candidate Watchlist to verify live trade velocity
-    // Avoids buying dead/waste coins that have 0 trades and never move
+    // NEVER buy new coins at creation — ALL tokens go to Candidate Watchlist
+    // and must prove real buyer momentum, volume & price movement before entry
     let initialPrice = 0.00000003;
     if (token.vSolInBondingCurve && token.vTokensInBondingCurve && token.vTokensInBondingCurve > 0) {
       initialPrice = BondingCurveCalculator.calculateSpotPriceSol(token.vSolInBondingCurve, token.vTokensInBondingCurve);
@@ -302,115 +299,6 @@ export class PumpFunAgent {
 
     // Subscribe to live trade events for this candidate coin so we catch momentum!
     this.pumpPortal.subscribeTokenTrades([token.mint]);
-  }
-
-  private async executeInstantSnipe(token: TokenCreationEvent, reason: string): Promise<void> {
-    const canOpen = this.config.tradingMode === 'live'
-      ? await this.liveTrader?.canOpenPosition(token.mint)
-      : this.paperTrader?.canOpenPosition(token.mint);
-    if (!canOpen) return;
-
-    const stats = await this.getTraderStats();
-    if (this.riskManager.checkCircuitBreaker(stats.realizedPnlSol)) return;
-
-    const research = await this.researchEngine.conductResearch(token);
-    const sentiment = this.socialSentiment.analyzeToken(token);
-
-    const rugCheck = await this.rugCheckService.evaluateToken(token.mint, token.traderPublicKey);
-    if (!rugCheck.isSafe) {
-      console.log(chalk.yellow(`[RugCheck Rejected] ⚠️ ${token.symbol}: ${rugCheck.risks.join(', ')}`));
-      this.webServer.broadcastLog(`RugCheck rejected ${token.symbol}: ${rugCheck.risks.join(', ')}`);
-      return;
-    }
-
-    const aiDecision = await this.aiBrain.evaluateOpportunity(
-      token,
-      research,
-      this.strategyCoordinator.getActiveStrategy(),
-      0,
-      rugCheck.score / 100
-    );
-
-    await this.sqliteMemory.recordAIDecision(
-      token.mint,
-      token.symbol,
-      aiDecision.shouldBuy ? 'BUY' : 'SKIP',
-      aiDecision.confidenceScore,
-      aiDecision.reasoning,
-      aiDecision.tags
-    );
-
-    if (!aiDecision.shouldBuy || aiDecision.confidenceScore < this.config.minAiConfidence) {
-      return;
-    }
-
-    // Dynamic Sizing with Sandwich Guard & Reinvestment Engine
-    const currentBal = this.config.tradingMode === 'live' ? await this.solanaService.getBalance() : (this.paperTrader?.getBalance() || 1.0);
-    const recoveryMultiplier = this.lossRecovery.getRecoveryMultiplier(aiDecision.confidenceScore);
-    const devRepScore = Math.max(0, 100 - rugCheck.score);
-    const baseDynamicSizeSol = this.positionSizer.calculateTradeSize(
-      aiDecision.confidenceScore,
-      this.journal.getAnalytics().winRate,
-      devRepScore,
-      currentBal
-    );
-
-    const compoundedSizeSol = this.reinvestmentEngine.calculateCompoundedTradeSize(stats.realizedPnlSol, currentBal);
-    const finalSizeSol = Number((Math.max(baseDynamicSizeSol, compoundedSizeSol) * recoveryMultiplier).toFixed(4));
-
-    const sandwich = this.sandwichGuard.evaluateSandwichRisk(finalSizeSol, token.vSolInBondingCurve || 30000000000);
-    const effectiveSlippage = sandwich.isHighRisk ? sandwich.maxSafeSlippagePct : this.config.slippagePercent;
-
-    if (this.config.tradingMode === 'live') {
-      const optimalFee = await this.gasOptimizer.getOptimalPriorityFee();
-      this.config.priorityFeeLamports = optimalFee;
-    }
-
-    this.passedTokensCount++;
-    console.log(
-      chalk.magenta(
-        `\n[Instant Snipe Approved] 🔬 [${research.category}] ${token.symbol} (${token.name})\n` +
-        `  • Reason: ${reason}\n` +
-        `  • Dynamic Sizing: ${finalSizeSol.toFixed(4)} SOL (Kelly & Reinvestment Adjusted)\n` +
-        `  • Virality Tier: ${sentiment.sentimentTier} (${sentiment.viralityScore}/100)\n` +
-        `  • AI Confidence: ${aiDecision.confidenceScore}% (${aiDecision.convictionTier || 'STANDARD'})\n` +
-        `  • AI Reasoning: "${aiDecision.reasoning}"\n` +
-        `  • Mint: ${token.mint}`
-      )
-    );
-
-    let position: Position | null = null;
-    if (this.config.tradingMode === 'live' && this.liveTrader) {
-      position = await this.liveTrader.executeBuy(
-        token,
-        aiDecision.tags,
-        this.strategyCoordinator.getActiveStrategy(),
-        aiDecision.confidenceScore,
-        aiDecision.reasoning,
-        finalSizeSol,
-        effectiveSlippage
-      );
-    } else if (this.paperTrader) {
-      position = this.paperTrader.simulateBuy(
-        token,
-        aiDecision.tags,
-        this.strategyCoordinator.getActiveStrategy(),
-        aiDecision.confidenceScore,
-        aiDecision.reasoning,
-        finalSizeSol,
-        effectiveSlippage
-      );
-    }
-
-    if (position) {
-      position.category = research.category;
-      position.researchScore = research.researchScore;
-      this.pumpPortal.subscribeTokenTrades([position.mint]);
-      this.webServer.broadcastLog(`[Instant Snipe] Bought [${research.category}] ${position.symbol} (${finalSizeSol.toFixed(3)} SOL, ${aiDecision.confidenceScore}% conf)`);
-      await this.notificationService.notifyBuy(position, this.config.tradingMode);
-      await this.telegramBot.notifyBuy(position, finalSizeSol);
-      await this.syncAndRenderDashboard();
-    }
   }
 
   private async executeMovingCoinBuy(candidate: CandidateToken, priceGainPct: number): Promise<void> {
@@ -553,6 +441,22 @@ export class PumpFunAgent {
     sizeMultiplier: number = 1.0
   ): Promise<void> {
     const symbol = this.tokenSymbolMap.get(trade.mint) || trade.mint.substring(0, 6).toUpperCase();
+
+    const canOpen = this.config.tradingMode === 'live'
+      ? await this.liveTrader?.canOpenPosition(trade.mint)
+      : this.paperTrader?.canOpenPosition(trade.mint);
+    if (!canOpen) return;
+
+    const stats = await this.getTraderStats();
+    if (this.riskManager.checkCircuitBreaker(stats.realizedPnlSol)) return;
+
+    const rugCheck = await this.rugCheckService.evaluateToken(trade.mint, trade.traderPublicKey);
+    if (!rugCheck.isSafe) {
+      console.log(chalk.yellow(`[RugCheck Rejected ${strategyName}] ⚠️ ${symbol}: ${rugCheck.risks.join(', ')}`));
+      this.webServer.broadcastLog(`RugCheck rejected ${strategyName} on ${symbol}: ${rugCheck.risks.join(', ')}`);
+      return;
+    }
+
     const mockToken: TokenCreationEvent = {
       signature: trade.signature,
       mint: trade.mint,
@@ -663,8 +567,9 @@ export class PumpFunAgent {
       : this.paperTrader?.getPosition(trade.mint)?.status === 'OPEN';
 
     if (!isAlreadyOpen && this.copyTrader.shouldCopy(trade)) {
-      this.webServer.broadcastLog(`Copy-trade triggered for alpha wallet on ${trade.mint}`);
-      await this.executeStrategyTradeBuy(trade, 'COPY_WHALE', 'Alpha Target Follower', 1.0);
+      const label = this.copyTrader.getWalletLabel(trade.traderPublicKey);
+      this.webServer.broadcastLog(`🦈 Shark copy-trade triggered: ${label} on ${trade.mint}`);
+      await this.executeStrategyTradeBuy(trade, 'COPY_WHALE', `Shark Follower: ${label}`, 1.2);
     }
 
     // Process Candidate Watchlist for moving coins (filters out dead 0-volume launches)
@@ -697,18 +602,18 @@ export class PumpFunAgent {
         ? ((candidate.latestPriceSol - candidate.initialPriceSol) / candidate.initialPriceSol) * 100
         : 0;
 
-      const minTrades = this.config.minBuyTradeCount || 3;
-      const minBuyVol = this.config.minBuyVolumeSol || 0.35;
-      const minProgress = this.config.minBondingCurveProgressPct || 1.0;
+      const minTrades = this.config.minBuyTradeCount || 5;
+      const minBuyVol = this.config.minBuyVolumeSol || 0.5;
+      const minProgress = this.config.minBondingCurveProgressPct || 1.5;
 
-      // Confirmed Moving Coin criteria:
-      // 1. Multiple buy trades across >= 2 unique buyer wallets
-      // 2. Real SOL volume accumulation exceeding minBuyVolumeSol
-      // 3. Buy volume dominates sell volume
-      // 4. Positive price movement (price gain >= 1.0% or curve progress >= minProgress%)
-      const hasActiveBuyers = candidate.buyCount >= minTrades && candidate.uniqueBuyers.size >= 2;
-      const hasVolumeBreakout = candidate.buyVolumeSol >= minBuyVol && candidate.buyVolumeSol > (candidate.sellVolumeSol * 1.1);
-      const hasPriceMomentum = priceGainPct >= 1.0 || candidate.bondingCurveProgress >= minProgress;
+      // Confirmed Moving Coin criteria (strict — only buy coins that are ACTUALLY moving):
+      // 1. At least minTrades buy trades across >= 3 unique buyer wallets (not wash trading)
+      // 2. Cumulative buy volume >= minBuyVol SOL with buy volume dominating sell volume
+      // 3. Confirmed positive price gain >= 2.0% AND bonding curve progress >= minProgress%
+      // 4. Net buy volume positive (more buyers than sellers)
+      const hasActiveBuyers = candidate.buyCount >= minTrades && candidate.uniqueBuyers.size >= 3;
+      const hasVolumeBreakout = candidate.buyVolumeSol >= minBuyVol && candidate.buyVolumeSol > (candidate.sellVolumeSol * 1.3);
+      const hasPriceMomentum = priceGainPct >= 2.0 && candidate.bondingCurveProgress >= minProgress;
 
       if (!candidate.evaluating && hasActiveBuyers && hasVolumeBreakout && hasPriceMomentum) {
         candidate.evaluating = true;
