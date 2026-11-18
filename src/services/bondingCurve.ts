@@ -80,8 +80,11 @@ export class BondingCurveCalculator {
    */
   public static calculateProgress(vSolLamports: number): number {
     if (!vSolLamports || vSolLamports <= 0 || isNaN(vSolLamports)) return 0;
-    const realSol = Math.max(0, vSolLamports - BondingCurveCalculator.INITIAL_VIRTUAL_SOL);
-    const progress = (realSol / BondingCurveCalculator.GRADUATION_SOL_THRESHOLD) * 100;
+    // PumpPortal can send vSol either in raw Lamports (>1e6) or in SOL units (~30-85 SOL)
+    const vSol = vSolLamports > 1e6 ? vSolLamports / 1e9 : vSolLamports;
+    const realSol = Math.max(0, vSol - 30);
+    // Raydium migration threshold requires ~55 real SOL added to virtual curve (~85 SOL total)
+    const progress = (realSol / 55) * 100;
     return Math.min(100, Math.max(0, progress));
   }
 

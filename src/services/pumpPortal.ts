@@ -106,12 +106,20 @@ export class PumpPortalService {
     if (!msg) return;
 
     if (msg.txType === 'create' || (msg.mint && msg.name && msg.symbol && !msg.tokenAmount)) {
+      // PumpPortal sends solAmount for initial SOL buy, or initialBuy as SOL (or raw tokens if large).
+      let initialBuySol = 0;
+      if (typeof msg.solAmount === 'number' && !isNaN(msg.solAmount) && msg.solAmount > 0) {
+        initialBuySol = msg.solAmount > 1e6 ? msg.solAmount / 1e9 : msg.solAmount;
+      } else if (typeof msg.initialBuy === 'number' && !isNaN(msg.initialBuy) && msg.initialBuy > 0) {
+        initialBuySol = msg.initialBuy > 1e6 ? msg.initialBuy / 1e9 : (msg.initialBuy < 1000 ? msg.initialBuy : 0);
+      }
+
       const tokenEvent: TokenCreationEvent = {
         signature: msg.signature || '',
         mint: msg.mint,
         traderPublicKey: msg.traderPublicKey || '',
         txType: 'create',
-        initialBuy: msg.initialBuy || msg.solAmount || 0,
+        initialBuy: initialBuySol,
         bondingCurveKey: msg.bondingCurveKey,
         vTokensInBondingCurve: msg.vTokensInBondingCurve,
         vSolInBondingCurve: msg.vSolInBondingCurve,
@@ -257,7 +265,12 @@ export class PumpPortalService {
     }
     if (this.ws) {
       this.ws.removeAllListeners();
-      this.ws.close();
+      this.ws.on('error', () => {}); // Suppress closure errors during intentional disconnect
+      try {
+        this.ws.close();
+      } catch {
+        // Suppress error if already closed
+      }
       this.ws = null;
     }
     this.isConnected = false;

@@ -8,6 +8,8 @@ import { Backtester } from '../services/backtester';
 import { AIBrain } from '../services/aiBrain';
 import { loadConfig } from '../config';
 
+import { StrategyManager } from '../strategies';
+
 async function runTests() {
   console.log('--- RUNNING PUMPFUN TRADING AGENT VERIFICATION TESTS ---');
   let passed = 0;
@@ -119,6 +121,58 @@ async function runTests() {
   assert(aiDecision.confidenceScore > 0, `AIBrain provides calibrated confidence score (${aiDecision.confidenceScore}/100)`);
   assert(aiDecision.convictionTier !== undefined, `AIBrain assigns conviction tier (${aiDecision.convictionTier})`);
   assert(typeof aiDecision.suggestedTpPercent === 'number', `AIBrain suggests take profit target (+${aiDecision.suggestedTpPercent}%)`);
+
+  // 7. BondingCurve Progress Calculation (Lamports and SOL formats)
+  const prog0 = BondingCurveCalculator.calculateProgress(30);
+  const prog50 = BondingCurveCalculator.calculateProgress(57.5);
+  const prog100 = BondingCurveCalculator.calculateProgress(85);
+  const progLamport = BondingCurveCalculator.calculateProgress(57.5 * 1e9);
+  assert(prog0 === 0, 'Bonding curve progress is 0% at 30 SOL base');
+  assert(Math.abs(prog50 - 50) < 0.1, `Bonding curve progress is 50% at 57.5 SOL (${prog50.toFixed(1)}%)`);
+  assert(Math.abs(prog100 - 100) < 0.1, `Bonding curve progress is 100% at 85 SOL (${prog100.toFixed(1)}%)`);
+  assert(Math.abs(progLamport - 50) < 0.1, 'Bonding curve progress handles lamports format consistently');
+
+  // 8. StrategyManager: Rejection of Dead / Waste Coins at Launch
+  const strategyManager = new StrategyManager('MOMENTUM_SCALP');
+  const deadToken: any = {
+    signature: 'sig_dead',
+    mint: 'DeadCoin11111111111111111111111111111111111',
+    traderPublicKey: 'dev_dead',
+    txType: 'create',
+    initialBuy: 0.0019, // typical pumpfun dead coin dev buy
+    name: 'Waste Coin',
+    symbol: 'WASTE',
+    timestamp: Date.now()
+  };
+  const evalDead = strategyManager.evaluateNewToken(deadToken, 85);
+  assert(!evalDead.shouldBuy, 'MOMENTUM_SCALP rejects blind buying dead token at block 0');
+
+  // 9. StrategyManager: Triggering On Confirmed Live Momentum
+  const tradeTick1: any = {
+    mint: 'MovingCoin1111111111111111111111111111111',
+    traderPublicKey: 'buyer1',
+    txType: 'buy',
+    solAmount: 0.15,
+    timestamp: Date.now()
+  };
+  const tradeTick2: any = {
+    mint: 'MovingCoin1111111111111111111111111111111',
+    traderPublicKey: 'buyer2',
+    txType: 'buy',
+    solAmount: 0.20,
+    timestamp: Date.now()
+  };
+  const tradeTick3: any = {
+    mint: 'MovingCoin1111111111111111111111111111111',
+    traderPublicKey: 'buyer3',
+    txType: 'buy',
+    solAmount: 0.15,
+    timestamp: Date.now()
+  };
+  strategyManager.evaluateTradeTick(tradeTick1);
+  strategyManager.evaluateTradeTick(tradeTick2);
+  const evalMoving = strategyManager.evaluateTradeTick(tradeTick3);
+  assert(evalMoving.shouldBuy, `MOMENTUM_SCALP triggers on confirmed moving coin (${evalMoving.reason})`);
 
   console.log(`\nTEST SUMMARY: ${passed} Passed, ${failed} Failed`);
   if (failed > 0) process.exit(1);

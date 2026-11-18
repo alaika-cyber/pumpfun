@@ -62,6 +62,11 @@ export function loadConfig(): AgentConfig {
       .split(',')
       .map(w => w.trim())
       .filter(Boolean),
-    minViralityScore: parseInt(process.env.MIN_VIRALITY_SCORE || '45', 10)
+    minViralityScore: parseInt(process.env.MIN_VIRALITY_SCORE || '45', 10),
+
+    // Momentum & Moving Coin Filter Settings
+    minBondingCurveProgressPct: parseFloat(process.env.MIN_CURVE_PROGRESS_PCT || '1.0'),
+    minBuyVolumeSol: parseFloat(process.env.MIN_BUY_VOLUME_SOL || '0.35'),
+    minBuyTradeCount: parseInt(process.env.MIN_BUY_TRADE_COUNT || '3', 10)
   };
 }

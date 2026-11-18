@@ -121,4 +121,26 @@ export interface AgentConfig {
   requireSocials: boolean;
   blacklistedWords: string[];
   minViralityScore: number;
+
+  // Momentum & Moving Coin Filter Settings
+  minBondingCurveProgressPct: number;
+  minBuyVolumeSol: number;
+  minBuyTradeCount: number;
+}
+
+export interface CandidateToken {
+  token: TokenCreationEvent;
+  addedAt: number;
+  initialPriceSol: number;
+  latestPriceSol: number;
+  highestPriceSol: number;
+  tradesCount: number;
+  buyCount: number;
+  sellCount: number;
+  buyVolumeSol: number;
+  sellVolumeSol: number;
+  uniqueBuyers: Set<string>;
+  bondingCurveProgress: number;
+  lastTradeTimestamp: number;
+  evaluating: boolean;
 }

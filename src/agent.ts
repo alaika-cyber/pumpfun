@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import Table from 'cli-table3';
-import { AgentConfig, Position, TokenCreationEvent, TradeEvent } from './types';
+import { AgentConfig, CandidateToken, Position, TokenCreationEvent, TradeEvent } from './types';
 import { SolanaService } from './services/solana';
 import { FilterEngine } from './services/filterEngine';
 import { RiskManager, ExitSignal } from './services/riskManager';
@@ -76,6 +76,9 @@ export class PumpFunAgent {
   private devPubkeyMap: Map<string, string> = new Map();
   private tokenSymbolMap: Map<string, string> = new Map();
   private latestPredictions: Map<string, MigrationPrediction> = new Map();
+  private candidateWatchlist: Map<string, CandidateToken> = new Map();
+  private static readonly MAX_CANDIDATE_WATCHLIST = 80;
+  private static readonly CANDIDATE_WATCHLIST_TTL_MS = 90000;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -252,7 +255,56 @@ export class PumpFunAgent {
     const filterResult = this.filterEngine.evaluateToken(token);
     if (!filterResult.passed) return;
 
-    // Bug Fix #1: Check position capacity & circuit breaker BEFORE expensive AI/research calls
+    const isAlreadyOpen = this.config.tradingMode === 'live'
+      ? this.liveTrader?.getPosition(token.mint)?.status === 'OPEN'
+      : this.paperTrader?.getPosition(token.mint)?.status === 'OPEN';
+    if (isAlreadyOpen || this.candidateWatchlist.has(token.mint)) return;
+
+    // Check if initial instant snipe is triggered (e.g. SNIPER with high initial dev buy >= 0.75 SOL)
+    const stratDecision = this.strategyManager.evaluateNewToken(token, 80);
+    if (stratDecision.shouldBuy) {
+      await this.executeInstantSnipe(token, stratDecision.reason);
+      return;
+    }
+
+    // Default & Momentum Scalper: Route to Candidate Watchlist to verify live trade velocity
+    // Avoids buying dead/waste coins that have 0 trades and never move
+    let initialPrice = 0.00000003;
+    if (token.vSolInBondingCurve && token.vTokensInBondingCurve && token.vTokensInBondingCurve > 0) {
+      initialPrice = BondingCurveCalculator.calculateSpotPriceSol(token.vSolInBondingCurve, token.vTokensInBondingCurve);
+    }
+
+    // Maintain max watchlist size to prevent memory leaks
+    if (this.candidateWatchlist.size >= PumpFunAgent.MAX_CANDIDATE_WATCHLIST) {
+      const oldestMint = this.candidateWatchlist.keys().next().value;
+      if (oldestMint) {
+        this.candidateWatchlist.delete(oldestMint);
+        this.pumpPortal.unsubscribeTokenTrades([oldestMint]);
+      }
+    }
+
+    this.candidateWatchlist.set(token.mint, {
+      token,
+      addedAt: Date.now(),
+      initialPriceSol: initialPrice,
+      latestPriceSol: initialPrice,
+      highestPriceSol: initialPrice,
+      tradesCount: 0,
+      buyCount: 0,
+      sellCount: 0,
+      buyVolumeSol: 0,
+      sellVolumeSol: 0,
+      uniqueBuyers: new Set<string>(),
+      bondingCurveProgress: token.vSolInBondingCurve ? BondingCurveCalculator.calculateProgress(token.vSolInBondingCurve) : 0,
+      lastTradeTimestamp: Date.now(),
+      evaluating: false
+    });
+
+    // Subscribe to live trade events for this candidate coin so we catch momentum!
+    this.pumpPortal.subscribeTokenTrades([token.mint]);
+  }
+
+  private async executeInstantSnipe(token: TokenCreationEvent, reason: string): Promise<void> {
     const canOpen = this.config.tradingMode === 'live'
       ? await this.liveTrader?.canOpenPosition(token.mint)
       : this.paperTrader?.canOpenPosition(token.mint);
@@ -292,9 +344,6 @@ export class PumpFunAgent {
       return;
     }
 
-    const stratDecision = this.strategyManager.evaluateNewToken(token, aiDecision.confidenceScore);
-    if (!stratDecision.shouldBuy) return;
-
     // Dynamic Sizing with Sandwich Guard & Reinvestment Engine
     const currentBal = this.config.tradingMode === 'live' ? await this.solanaService.getBalance() : (this.paperTrader?.getBalance() || 1.0);
     const recoveryMultiplier = this.lossRecovery.getRecoveryMultiplier(aiDecision.confidenceScore);
@@ -320,7 +369,8 @@ export class PumpFunAgent {
     this.passedTokensCount++;
     console.log(
       chalk.magenta(
-        `\n[Research & AI Approved] 🔬 [${research.category}] ${token.symbol} (${token.name})\n` +
+        `\n[Instant Snipe Approved] 🔬 [${research.category}] ${token.symbol} (${token.name})\n` +
+        `  • Reason: ${reason}\n` +
         `  • Dynamic Sizing: ${finalSizeSol.toFixed(4)} SOL (Kelly & Reinvestment Adjusted)\n` +
         `  • Virality Tier: ${sentiment.sentimentTier} (${sentiment.viralityScore}/100)\n` +
         `  • AI Confidence: ${aiDecision.confidenceScore}% (${aiDecision.convictionTier || 'STANDARD'})\n` +
@@ -356,7 +406,140 @@ export class PumpFunAgent {
       position.category = research.category;
       position.researchScore = research.researchScore;
       this.pumpPortal.subscribeTokenTrades([position.mint]);
-      this.webServer.broadcastLog(`[AI Brain] Bought [${research.category}] ${position.symbol} (${finalSizeSol.toFixed(3)} SOL, ${aiDecision.confidenceScore}% conf)`);
+      this.webServer.broadcastLog(`[Instant Snipe] Bought [${research.category}] ${position.symbol} (${finalSizeSol.toFixed(3)} SOL, ${aiDecision.confidenceScore}% conf)`);
+      await this.notificationService.notifyBuy(position, this.config.tradingMode);
+      await this.telegramBot.notifyBuy(position, finalSizeSol);
+      await this.syncAndRenderDashboard();
+    }
+  }
+
+  private async executeMovingCoinBuy(candidate: CandidateToken, priceGainPct: number): Promise<void> {
+    const token = candidate.token;
+
+    // 1. Capacity check
+    const canOpen = this.config.tradingMode === 'live'
+      ? await this.liveTrader?.canOpenPosition(token.mint)
+      : this.paperTrader?.canOpenPosition(token.mint);
+    if (!canOpen) {
+      candidate.evaluating = false;
+      return;
+    }
+
+    // 2. Circuit breaker check
+    const stats = await this.getTraderStats();
+    if (this.riskManager.checkCircuitBreaker(stats.realizedPnlSol)) {
+      candidate.evaluating = false;
+      return;
+    }
+
+    // 3. RugCheck on the active coin
+    const rugCheck = await this.rugCheckService.evaluateToken(token.mint, token.traderPublicKey);
+    if (!rugCheck.isSafe) {
+      console.log(chalk.yellow(`[RugCheck Rejected Moving Coin] ⚠️ ${token.symbol}: ${rugCheck.risks.join(', ')}`));
+      this.webServer.broadcastLog(`RugCheck rejected moving coin ${token.symbol}: ${rugCheck.risks.join(', ')}`);
+      this.candidateWatchlist.delete(token.mint);
+      this.pumpPortal.unsubscribeTokenTrades([token.mint]);
+      return;
+    }
+
+    // 4. Deep Research & Sentiment
+    const research = await this.researchEngine.conductResearch(token);
+    const sentiment = this.socialSentiment.analyzeToken(token);
+
+    // 5. AI Brain Evaluation with confirmed trade volume
+    const aiDecision = await this.aiBrain.evaluateOpportunity(
+      token,
+      research,
+      this.strategyCoordinator.getActiveStrategy(),
+      candidate.buyVolumeSol,
+      rugCheck.score / 100
+    );
+
+    await this.sqliteMemory.recordAIDecision(
+      token.mint,
+      token.symbol,
+      aiDecision.shouldBuy ? 'BUY' : 'SKIP',
+      aiDecision.confidenceScore,
+      `[Momentum Moving Coin] ${aiDecision.reasoning}`,
+      [...aiDecision.tags, 'MovingCoin', 'ConfirmedMomentum']
+    );
+
+    if (!aiDecision.shouldBuy || aiDecision.confidenceScore < this.config.minAiConfidence) {
+      console.log(chalk.gray(`[AI Brain Skipped] Moving coin ${token.symbol} (Score: ${aiDecision.confidenceScore}%, Min: ${this.config.minAiConfidence}%)`));
+      this.candidateWatchlist.delete(token.mint);
+      this.pumpPortal.unsubscribeTokenTrades([token.mint]);
+      return;
+    }
+
+    // 6. Dynamic Sizing
+    const currentBal = this.config.tradingMode === 'live' ? await this.solanaService.getBalance() : (this.paperTrader?.getBalance() || 1.0);
+    const recoveryMultiplier = this.lossRecovery.getRecoveryMultiplier(aiDecision.confidenceScore);
+    const devRepScore = Math.max(0, 100 - rugCheck.score);
+    const baseDynamicSizeSol = this.positionSizer.calculateTradeSize(
+      aiDecision.confidenceScore,
+      this.journal.getAnalytics().winRate,
+      devRepScore,
+      currentBal
+    );
+
+    const compoundedSizeSol = this.reinvestmentEngine.calculateCompoundedTradeSize(stats.realizedPnlSol, currentBal);
+    const finalSizeSol = Number((Math.max(baseDynamicSizeSol, compoundedSizeSol) * recoveryMultiplier).toFixed(4));
+
+    const sandwich = this.sandwichGuard.evaluateSandwichRisk(finalSizeSol, token.vSolInBondingCurve || 30000000000);
+    const effectiveSlippage = sandwich.isHighRisk ? sandwich.maxSafeSlippagePct : this.config.slippagePercent;
+
+    if (this.config.tradingMode === 'live') {
+      const optimalFee = await this.gasOptimizer.getOptimalPriorityFee();
+      this.config.priorityFeeLamports = optimalFee;
+    }
+
+    this.passedTokensCount++;
+    console.log(
+      chalk.green.bold(
+        `\n[🔥 Moving Coin Breakout Confirmed!] 🚀 ${token.symbol} (${token.name})\n` +
+        `  • Activity: ${candidate.buyCount} buys across ${candidate.uniqueBuyers.size} unique wallets\n` +
+        `  • Volume: ${candidate.buyVolumeSol.toFixed(3)} SOL buy flow (Net: +${(candidate.buyVolumeSol - candidate.sellVolumeSol).toFixed(3)} SOL)\n` +
+        `  • Curve Progress: ${candidate.bondingCurveProgress.toFixed(1)}% | Price Gain: +${priceGainPct.toFixed(1)}%\n` +
+        `  • Virality Tier: ${sentiment.sentimentTier} (${sentiment.viralityScore}/100)\n` +
+        `  • Trade Size: ${finalSizeSol.toFixed(4)} SOL | AI Confidence: ${aiDecision.confidenceScore}%\n` +
+        `  • Mint: ${token.mint}`
+      )
+    );
+
+    let position: Position | null = null;
+    const buyTags = [...aiDecision.tags, 'MomentumBreakout', 'MovingCoin'];
+    const buyReason = `Live momentum breakout: ${candidate.buyCount} buys, ${candidate.buyVolumeSol.toFixed(2)} SOL vol, +${priceGainPct.toFixed(1)}% gain`;
+
+    if (this.config.tradingMode === 'live' && this.liveTrader) {
+      position = await this.liveTrader.executeBuy(
+        token,
+        buyTags,
+        this.strategyCoordinator.getActiveStrategy(),
+        aiDecision.confidenceScore,
+        buyReason,
+        finalSizeSol,
+        effectiveSlippage
+      );
+    } else if (this.paperTrader) {
+      position = this.paperTrader.simulateBuy(
+        token,
+        buyTags,
+        this.strategyCoordinator.getActiveStrategy(),
+        aiDecision.confidenceScore,
+        buyReason,
+        finalSizeSol,
+        effectiveSlippage
+      );
+    }
+
+    // Remove from candidate watchlist since it is now an active position
+    this.candidateWatchlist.delete(token.mint);
+
+    if (position) {
+      position.category = research.category;
+      position.researchScore = research.researchScore;
+      position.bondingCurveProgress = candidate.bondingCurveProgress;
+      this.webServer.broadcastLog(`[Momentum Engine] Bought moving coin ${position.symbol} (${finalSizeSol.toFixed(3)} SOL, +${priceGainPct.toFixed(1)}% gain)`);
       await this.notificationService.notifyBuy(position, this.config.tradingMode);
       await this.telegramBot.notifyBuy(position, finalSizeSol);
       await this.syncAndRenderDashboard();
@@ -484,6 +667,55 @@ export class PumpFunAgent {
       await this.executeStrategyTradeBuy(trade, 'COPY_WHALE', 'Alpha Target Follower', 1.0);
     }
 
+    // Process Candidate Watchlist for moving coins (filters out dead 0-volume launches)
+    const candidate = this.candidateWatchlist.get(trade.mint);
+    if (!isAlreadyOpen && candidate) {
+      candidate.tradesCount++;
+      candidate.lastTradeTimestamp = Date.now();
+      const rawSol = (trade.solAmount && !isNaN(trade.solAmount) && trade.solAmount > 0) ? trade.solAmount : 0;
+      const sol = rawSol > 1e6 ? rawSol / 1e9 : rawSol;
+
+      if (trade.txType === 'buy') {
+        candidate.buyCount++;
+        candidate.buyVolumeSol += sol;
+        if (trade.traderPublicKey) {
+          candidate.uniqueBuyers.add(trade.traderPublicKey);
+        }
+      } else if (trade.txType === 'sell') {
+        candidate.sellCount++;
+        candidate.sellVolumeSol += sol;
+      }
+
+      if (trade.vSolInBondingCurve && trade.vTokensInBondingCurve && trade.vTokensInBondingCurve > 0) {
+        const spot = BondingCurveCalculator.calculateSpotPriceSol(trade.vSolInBondingCurve, trade.vTokensInBondingCurve);
+        candidate.latestPriceSol = spot;
+        if (spot > candidate.highestPriceSol) candidate.highestPriceSol = spot;
+        candidate.bondingCurveProgress = BondingCurveCalculator.calculateProgress(trade.vSolInBondingCurve);
+      }
+
+      const priceGainPct = candidate.initialPriceSol > 0
+        ? ((candidate.latestPriceSol - candidate.initialPriceSol) / candidate.initialPriceSol) * 100
+        : 0;
+
+      const minTrades = this.config.minBuyTradeCount || 3;
+      const minBuyVol = this.config.minBuyVolumeSol || 0.35;
+      const minProgress = this.config.minBondingCurveProgressPct || 1.0;
+
+      // Confirmed Moving Coin criteria:
+      // 1. Multiple buy trades across >= 2 unique buyer wallets
+      // 2. Real SOL volume accumulation exceeding minBuyVolumeSol
+      // 3. Buy volume dominates sell volume
+      // 4. Positive price movement (price gain >= 1.0% or curve progress >= minProgress%)
+      const hasActiveBuyers = candidate.buyCount >= minTrades && candidate.uniqueBuyers.size >= 2;
+      const hasVolumeBreakout = candidate.buyVolumeSol >= minBuyVol && candidate.buyVolumeSol > (candidate.sellVolumeSol * 1.1);
+      const hasPriceMomentum = priceGainPct >= 1.0 || candidate.bondingCurveProgress >= minProgress;
+
+      if (!candidate.evaluating && hasActiveBuyers && hasVolumeBreakout && hasPriceMomentum) {
+        candidate.evaluating = true;
+        await this.executeMovingCoinBuy(candidate, priceGainPct);
+      }
+    }
+
     if (!isAlreadyOpen) {
       const stratDecision = this.strategyManager.evaluateTradeTick(trade);
       if (stratDecision.shouldBuy) {
@@ -534,6 +766,21 @@ export class PumpFunAgent {
           await this.executeExit(pos, exitSignal);
         }
       }
+
+      // Prune dead candidate coins that showed zero momentum within TTL (waste coins)
+      const now = Date.now();
+      const deadMints: string[] = [];
+      for (const [mint, cand] of this.candidateWatchlist.entries()) {
+        if (now - cand.addedAt > PumpFunAgent.CANDIDATE_WATCHLIST_TTL_MS) {
+          deadMints.push(mint);
+        }
+      }
+      if (deadMints.length > 0) {
+        for (const mint of deadMints) {
+          this.candidateWatchlist.delete(mint);
+        }
+        this.pumpPortal.unsubscribeTokenTrades(deadMints);
+      }
     } finally {
       this.isEvaluatingPositions = false;
     }
@@ -556,6 +803,9 @@ export class PumpFunAgent {
 
     this.clusterDetector.cleanup(position.mint);
     this.stealthRugDetector.cleanup(position.mint);
+    if (position.status === 'CLOSED') {
+      this.pumpPortal.unsubscribeTokenTrades([position.mint]);
+    }
 
     this.webServer.broadcastLog(`Exited ${position.symbol} (${exitSignal.reason}) PnL: ${exitSignal.pnlPercent.toFixed(2)}%`);
     await this.notificationService.notifySell(position, exitSignal, this.config.tradingMode);
@@ -667,6 +917,7 @@ export class PumpFunAgent {
         vaultCycleCount: this.profitVault.getCycleCount(),
         scannedCount: this.processedTokensCount,
         passedCount: this.passedTokensCount,
+        candidateWatchlistCount: this.candidateWatchlist.size,
         activeStrategy: this.strategyCoordinator.getActiveStrategy()
       });
 
@@ -678,7 +929,8 @@ export class PumpFunAgent {
         `Strategy: ${chalk.bold.cyan(this.strategyCoordinator.getActiveStrategy())} | ` +
         `Bankroll: ${chalk.bold(stats.currentBalanceSol.toFixed(4))} SOL | ` +
         `Vault: ${chalk.bold.yellow('🔒 ' + this.profitVault.getTotalVaulted().toFixed(4) + ' SOL (Cycle #' + this.profitVault.getCycleCount() + ')')} | ` +
-        `Realized PnL: ${pnlColor((stats.realizedPnlSol >= 0 ? '+' : '') + stats.realizedPnlSol.toFixed(4) + ' SOL')}`
+        `Realized PnL: ${pnlColor((stats.realizedPnlSol >= 0 ? '+' : '') + stats.realizedPnlSol.toFixed(4) + ' SOL')} | ` +
+        `Watchlist: ${chalk.bold.magenta(this.candidateWatchlist.size.toString())} moving candidates`
       );
 
       if (openPositions.length > 0) {
@@ -720,6 +972,7 @@ export class PumpFunAgent {
       clearInterval(this.dashboardInterval);
       this.dashboardInterval = null;
     }
+    this.candidateWatchlist.clear();
     this.telegramBot.stop();
     this.rpcFailover.stop();
     this.pumpPortal.disconnect();
